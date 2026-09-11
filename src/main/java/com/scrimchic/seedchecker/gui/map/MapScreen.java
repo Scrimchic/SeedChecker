@@ -1,6 +1,9 @@
 package com.scrimchic.seedchecker.gui.map;
 
 import com.scrimchic.seedchecker.core.map.MapViewport;
+import com.scrimchic.seedchecker.platform.MinecraftBridge;
+import com.scrimchic.seedchecker.world.DimensionType;
+import com.scrimchic.seedchecker.world.WorldContext;
 
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
@@ -41,6 +44,9 @@ public final class MapScreen extends Screen {
 
     private final MapViewport viewport = new MapViewport();
 
+    /** Refreshed every frame so the panel keeps up with dimension changes and world loads. */
+    private WorldContext worldContext = MinecraftBridge.currentWorldContext();
+
     private boolean dragging;
 
     public MapScreen() {
@@ -59,10 +65,12 @@ public final class MapScreen extends Screen {
 
     private void draw(MapCanvas canvas, int mouseX, int mouseY) {
         viewport.resize(this.width, this.height);
+        worldContext = MinecraftBridge.currentWorldContext();
 
         canvas.fill(0, 0, this.width, this.height, COLOR_BACKGROUND);
         drawGrid(canvas);
-        drawInfoPanel(canvas, mouseX, mouseY);
+        drawContextPanel(canvas);
+        drawCursorPanel(canvas, mouseX, mouseY);
     }
 
     private void drawGrid(MapCanvas canvas) {
@@ -101,39 +109,78 @@ public final class MapScreen extends Screen {
         return block % major == 0L ? COLOR_GRID_MAJOR : COLOR_GRID_MINOR;
     }
 
-    private void drawInfoPanel(MapCanvas canvas, int mouseX, int mouseY) {
-        double blockX = viewport.screenToBlockX(mouseX);
-        double blockZ = viewport.screenToBlockZ(mouseY);
-        long flooredX = (long) Math.floor(blockX);
-        long flooredZ = (long) Math.floor(blockZ);
-
+    /** The world context, top left: what Seed Checker currently knows about this world. */
+    private void drawContextPanel(MapCanvas canvas) {
         String[] lines = {
                 this.getTitle().getString(),
-                "Block   " + flooredX + ", " + flooredZ,
-                "Chunk   " + (flooredX >> 4) + ", " + (flooredZ >> 4),
+                "",
+                "Seed: " + (worldContext.hasSeed() ? Long.toString(worldContext.seed()) : "Unknown"),
+                "Minecraft: " + worldContext.minecraftVersion(),
+                "Dimension: " + dimensionLabel(worldContext),
+                "Mode: " + modeLabel(worldContext),
+        };
+        drawPanel(canvas, lines, PANEL_MARGIN, PANEL_MARGIN, 1);
+    }
+
+    /** Map and world coordinates under the cursor, bottom left. */
+    private void drawCursorPanel(MapCanvas canvas, int mouseX, int mouseY) {
+        long blockX = (long) Math.floor(viewport.screenToBlockX(mouseX));
+        long blockZ = (long) Math.floor(viewport.screenToBlockZ(mouseY));
+
+        String[] lines = {
+                "Block   " + blockX + ", " + blockZ,
+                "Chunk   " + (blockX >> 4) + ", " + (blockZ >> 4),
                 "Screen  " + mouseX + ", " + mouseY,
                 "Zoom    " + formatScale(viewport.getScale()),
                 "Center  " + Math.round(viewport.getCenterBlockX()) + ", "
                         + Math.round(viewport.getCenterBlockZ()),
                 "Grid    " + viewport.gridStepBlocks() + " blocks",
         };
+        int top = this.height - PANEL_MARGIN - panelHeight(canvas, lines.length);
+        drawPanel(canvas, lines, PANEL_MARGIN, top, 0);
+    }
 
-        int lineHeight = canvas.lineHeight() + 1;
+    private static String dimensionLabel(WorldContext context) {
+        if (!context.isInWorld()) {
+            return "-";
+        }
+        return context.dimension() == DimensionType.CUSTOM
+                ? context.dimensionId()
+                : context.dimension().displayName();
+    }
+
+    private static String modeLabel(WorldContext context) {
+        return context.isInWorld() ? context.playMode().displayName() : "Not in a world";
+    }
+
+    private static int lineHeight(MapCanvas canvas) {
+        return canvas.lineHeight() + 1;
+    }
+
+    private static int panelHeight(MapCanvas canvas, int lineCount) {
+        return lineCount * lineHeight(canvas) + PANEL_PADDING * 2;
+    }
+
+    /**
+     * Draws a left-aligned text panel. The first {@code highlightedLines} lines are drawn in the
+     * bright colour, the rest dimmed.
+     */
+    private void drawPanel(MapCanvas canvas, String[] lines, int left, int top, int highlightedLines) {
         int textWidth = 0;
         for (String line : lines) {
             textWidth = Math.max(textWidth, canvas.textWidth(line));
         }
 
-        int left = PANEL_MARGIN;
-        int top = PANEL_MARGIN;
-        int right = left + textWidth + PANEL_PADDING * 2;
-        int bottom = top + lines.length * lineHeight + PANEL_PADDING * 2;
-        canvas.fill(left, top, right, bottom, COLOR_PANEL);
+        canvas.fill(left, top,
+                left + textWidth + PANEL_PADDING * 2,
+                top + panelHeight(canvas, lines.length),
+                COLOR_PANEL);
 
         int y = top + PANEL_PADDING;
         for (int i = 0; i < lines.length; i++) {
-            canvas.text(lines[i], left + PANEL_PADDING, y, i == 0 ? COLOR_TEXT : COLOR_TEXT_DIM);
-            y += lineHeight;
+            canvas.text(lines[i], left + PANEL_PADDING, y,
+                    i < highlightedLines ? COLOR_TEXT : COLOR_TEXT_DIM);
+            y += lineHeight(canvas);
         }
     }
 

@@ -1,4 +1,6 @@
 {
-  "key.seedchecker.open_map": "Open Seed Checker map",
-  "screen.seedchecker.map": "Seed Checker Map"
+  "key.categories.seedchecker": "Seed Checker",
+  "key.category.seedchecker.main": "Seed Checker",
+  "key.seedchecker.open_map": "Open Seed Checker Map",
+  "screen.seedchecker.map": "Seed Checker"
 }
