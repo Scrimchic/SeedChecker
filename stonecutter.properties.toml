@@ -1,0 +1,52 @@
+# Seed Checker
+# Shared project properties and per-Minecraft-version dependencies.
+
+mod.id = "seedchecker"
+mod.name = "Seed Checker"
+mod.group = "com.scrimchic"
+mod.version = "0.1.0"
+
+# Shared Fabric configuration.
+deps.fabric_loader = "0.19.3"
+
+# Fabric Loom version used through loom-back-compat.
+loomx.loom_version = "1.17-SNAPSHOT"
+
+
+# ============================================================
+# Minecraft 1.16.5
+# Java 8
+# ============================================================
+
+["1.16.5"]
+
+mod.mc_compat = "1.16.5"
+mod.mc_releases = ["1.16.5"]
+
+deps.fabric_api = "0.42.0+1.16"
+
+
+# ============================================================
+# Minecraft 1.20.1
+# Java 17
+# ============================================================
+
+["1.20.1"]
+
+mod.mc_compat = "1.20.1"
+mod.mc_releases = ["1.20", "1.20.1"]
+
+deps.fabric_api = "0.92.12+1.20.1"
+
+
+# ============================================================
+# Minecraft 26.2
+# Java 25
+# ============================================================
+
+["26.2.x"]
+
+mod.mc_compat = "~26.2"
+mod.mc_releases = ["26.2"]
+
+deps.fabric_api = "0.160.0+26.2"

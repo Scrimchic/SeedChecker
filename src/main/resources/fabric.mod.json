@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "${id}",
+  "version": "${version}",
+  "name": "${name}",
+  "description": "A multi-version Minecraft seed analysis tool for exploring world generation, structures, biomes and seed recovery.",
+  "authors": [
+    "Scrimchic"
+  ],
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.scrimchic.seedchecker.SeedChecker"
+    ],
+    "client": [
+      "com.scrimchic.seedchecker.client.SeedCheckerClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.17.0",
+    "minecraft": "${minecraft}"
+  }
+}
