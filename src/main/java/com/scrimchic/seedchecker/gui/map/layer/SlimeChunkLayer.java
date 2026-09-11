@@ -3,15 +3,16 @@ package com.scrimchic.seedchecker.gui.map.layer;
 import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.gui.map.MapCanvas;
-import com.scrimchic.seedchecker.world.WorldContext;
+import com.scrimchic.seedchecker.world.ActiveWorld;
 import com.scrimchic.seedchecker.worldgen.SlimeChunkCalculator;
 
 /**
  * Shades every chunk where slimes may spawn below y=40.
  *
  * <p>Needs a known seed: there is no meaningful fallback, since a guessed seed would draw a
- * confidently wrong map. On a server with a hidden seed the layer reports itself unavailable and
- * draws nothing.
+ * confidently wrong map. Where that seed comes from - the integrated server, or one the player
+ * typed in for a server - is {@link ActiveWorld}'s problem, not this layer's. On a server with no
+ * seed at all the layer reports itself unavailable and draws nothing.
  */
 public final class SlimeChunkLayer implements MapLayer {
 
@@ -48,8 +49,8 @@ public final class SlimeChunkLayer implements MapLayer {
     }
 
     @Override
-    public String unavailableReason(WorldContext context, MapViewport viewport, ChunkRange visible) {
-        if (!context.hasSeed()) {
+    public String unavailableReason(ActiveWorld world, MapViewport viewport, ChunkRange visible) {
+        if (!world.hasSeed()) {
             return "needs a known seed";
         }
         if (viewport.getScale() * ChunkRange.CHUNK_SIZE < MIN_CHUNK_PIXELS
@@ -61,8 +62,8 @@ public final class SlimeChunkLayer implements MapLayer {
 
     @Override
     public void render(MapCanvas canvas, MapViewport viewport, ChunkRange visible,
-                       WorldContext context) {
-        long seed = context.seed();
+                       ActiveWorld world) {
+        long seed = world.seed();
 
         // Iterated as longs so a range that saturated at Integer.MAX_VALUE cannot wrap around.
         for (long z = visible.minChunkZ(); z <= visible.maxChunkZ(); z++) {

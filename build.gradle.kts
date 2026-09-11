@@ -30,6 +30,9 @@ repositories {
     }
     strictMaven("https://www.cursemaven.com", "CurseForge", "curse.maven")
     strictMaven("https://api.modrinth.com/maven", "Modrinth", "maven.modrinth")
+
+    // Only for the JUnit test dependencies below; the mod itself pulls nothing from here.
+    mavenCentral()
 }
 
 dependencies {
@@ -55,6 +58,14 @@ dependencies {
         "fabric-content-registries-v0",
         "fabric-registry-sync-v0",
     )
+
+    /*
+     * Unit tests for the Minecraft-free half of the mod: core, world, worldgen and storage have no
+     * Minecraft imports at all, so they can be exercised without launching the game. 5.10.x is the
+     * newest JUnit line that still supports Java 8, which the 1.16.5 target compiles against.
+     */
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 loom {
@@ -83,6 +94,10 @@ java {
 }
 
 tasks {
+    test {
+        useJUnitPlatform()
+    }
+
     processResources {
         fun MutableMap<String, String>.register(key: String, property: String) {
             val value: String = sc.properties[property]

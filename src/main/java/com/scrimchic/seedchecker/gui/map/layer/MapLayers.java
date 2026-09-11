@@ -7,7 +7,7 @@ import java.util.List;
 import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.gui.map.MapCanvas;
-import com.scrimchic.seedchecker.world.WorldContext;
+import com.scrimchic.seedchecker.world.ActiveWorld;
 
 /** The ordered set of map layers, drawn bottom to top. */
 public final class MapLayers {
@@ -34,11 +34,11 @@ public final class MapLayers {
 
     /** Draws every layer that is switched on and currently able to draw. */
     public void renderAll(MapCanvas canvas, MapViewport viewport, ChunkRange visible,
-                          WorldContext context) {
+                          ActiveWorld world) {
         for (int i = 0; i < layers.size(); i++) {
             MapLayer layer = layers.get(i);
-            if (layer.isEnabled() && layer.unavailableReason(context, viewport, visible) == null) {
-                layer.render(canvas, viewport, visible, context);
+            if (layer.isEnabled() && layer.unavailableReason(world, viewport, visible) == null) {
+                layer.render(canvas, viewport, visible, world);
             }
         }
     }

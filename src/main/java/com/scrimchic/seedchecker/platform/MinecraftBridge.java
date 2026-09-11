@@ -1,12 +1,17 @@
 package com.scrimchic.seedchecker.platform;
 
+import java.nio.file.Path;
+
 import com.scrimchic.seedchecker.world.PlayMode;
 import com.scrimchic.seedchecker.world.WorldContext;
+import com.scrimchic.seedchecker.world.WorldIdentity;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.storage.LevelResource;
 
 /**
  * The single place where Seed Checker reads live state out of the running Minecraft client.
@@ -58,6 +63,48 @@ public final class MinecraftBridge {
         }
         return WorldContext.withKnownSeed(
                 MINECRAFT_VERSION, PlayMode.SINGLEPLAYER, dimensionId, serverLevel.getSeed());
+    }
+
+    /**
+     * Identifies the world the player is in, so Seed Checker can find its stored profile.
+     *
+     * <p>A singleplayer world is identified by its save <em>directory name</em>, which is unique
+     * inside {@code saves/}, stays the same across restarts, and - unlike the absolute path -
+     * survives the game directory being moved. A server is identified by the address the player
+     * connected to.
+     *
+     * <p>Both Overworld and Nether return the same identity: a dimension is runtime context, not
+     * a separate world.
+     *
+     * @return the identity, or {@code null} when there is no world, or when the connection is one
+     *         Seed Checker cannot name stably enough to key a profile on
+     */
+    public static WorldIdentity currentWorldIdentity() {
+        Minecraft client = Minecraft.getInstance();
+        if (client.level == null) {
+            return null;
+        }
+
+        if (client.hasSingleplayerServer()) {
+            IntegratedServer server = client.getSingleplayerServer();
+            if (server == null) {
+                return null;
+            }
+            Path saveDirectory = server.getWorldPath(LevelResource.ROOT).getFileName();
+            if (saveDirectory == null) {
+                return null;
+            }
+            return WorldIdentity.singleplayer(
+                    saveDirectory.toString(), server.getWorldData().getLevelName());
+        }
+
+        ServerData server = client.getCurrentServer();
+        if (server == null) {
+            // Realms and other joins that carry no server entry. The resolved socket address would
+            // be a poor substitute: DNS round-robin would hand out a new profile every join.
+            return null;
+        }
+        return WorldIdentity.multiplayer(server.ip, server.name);
     }
 
     /** @return the server-side counterpart of the level the player is in, or {@code null}. */

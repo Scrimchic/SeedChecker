@@ -2,19 +2,25 @@ package com.scrimchic.seedchecker.gui.map;
 
 import java.util.List;
 
+import com.scrimchic.seedchecker.client.world.WorldProfileManager;
 import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.gui.map.layer.MapLayer;
 import com.scrimchic.seedchecker.gui.map.layer.MapLayers;
-import com.scrimchic.seedchecker.platform.MinecraftBridge;
+import com.scrimchic.seedchecker.world.ActiveWorld;
 import com.scrimchic.seedchecker.world.DimensionType;
+import com.scrimchic.seedchecker.world.SeedParser;
 import com.scrimchic.seedchecker.world.WorldContext;
 
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
+import org.lwjgl.glfw.GLFW;
+
 //? if >=26.1 {
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.input.CharacterEvent;
+import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 //?} else if >=1.20 {
 /*import net.minecraft.client.gui.GuiGraphics;*/
@@ -24,9 +30,9 @@ import net.minecraft.network.chat.TranslatableComponent;*/
 //?}
 
 /**
- * The Seed Checker map screen: an empty, pannable and zoomable world map.
+ * The Seed Checker map screen: a pannable and zoomable world map with the map layers on top.
  *
- * <p>Everything except the render entry point and the mouse callbacks is shared between all
+ * <p>Everything except the render entry point and the input callbacks is shared between all
  * supported Minecraft versions; those signatures changed in 26.x and are isolated below.
  */
 public final class MapScreen extends Screen {
@@ -41,15 +47,21 @@ public final class MapScreen extends Screen {
     private static final int COLOR_TEXT = 0xFFDCE3EA;
     private static final int COLOR_TEXT_DIM = 0xFF8C98A4;
     private static final int COLOR_TEXT_HOVER = 0xFFFFD479;
+    private static final int COLOR_TEXT_ERROR = 0xFFE86A6A;
 
     /** Every eighth grid line is drawn brighter. */
     private static final int MAJOR_GRID_MULTIPLE = 8;
 
     private static final int PANEL_MARGIN = 6;
-    private static final int PANEL_PADDING = 4;
 
-    /** Rows above the layer switches: title, blank, seed, version, dimension, mode, header. */
-    private static final int CONTEXT_LINES = 7;
+    /** {@code -9223372036854775808} is the longest seed that can be typed. */
+    private static final int MAX_SEED_LENGTH = 20;
+
+    private static final int ACTION_EDIT_SEED = 1;
+    private static final int ACTION_CLEAR_SEED = 2;
+
+    /** Layer toggles occupy the action ids from here upwards, one per layer. */
+    private static final int ACTION_LAYER_BASE = 100;
 
     /**
      * Layer switches live for the whole client session rather than per screen, so reopening the
@@ -61,12 +73,12 @@ public final class MapScreen extends Screen {
 
     private boolean dragging;
 
-    /** Screen rectangle of the layer toggle rows, recorded while drawing so clicks can hit it. */
-    private int layerRowsLeft;
-    private int layerRowsRight;
-    private int layerRowsTop;
-    private int layerRowHeight;
-    private int layerRowCount;
+    /** The panel as it was last drawn, kept so a click can be matched against its rows. */
+    private TextPanel contextPanel;
+
+    private boolean editingSeed;
+    private String seedInput = "";
+    private String seedError;
 
     public MapScreen() {
         super(title());
@@ -85,15 +97,21 @@ public final class MapScreen extends Screen {
     private void draw(MapCanvas canvas, int mouseX, int mouseY) {
         viewport.resize(this.width, this.height);
 
-        // Re-read every frame so the panel keeps up with world loads and dimension changes.
-        WorldContext context = MinecraftBridge.currentWorldContext();
+        // Re-read every frame so the panel keeps up with world loads and dimension changes. The
+        // profile behind it is already in memory; nothing here touches the filesystem.
+        ActiveWorld world = WorldProfileManager.get().currentWorld();
         ChunkRange visible = ChunkRange.visibleIn(viewport);
 
         canvas.fill(0, 0, this.width, this.height, COLOR_BACKGROUND);
         drawGrid(canvas);
-        LAYERS.renderAll(canvas, viewport, visible, context);
-        drawContextPanel(canvas, context, visible, mouseX, mouseY);
-        drawCursorPanel(canvas, mouseX, mouseY);
+        LAYERS.renderAll(canvas, viewport, visible, world);
+
+        contextPanel = buildContextPanel(world, visible);
+        contextPanel.draw(canvas, PANEL_MARGIN, PANEL_MARGIN, mouseX, mouseY);
+
+        TextPanel cursorPanel = buildCursorPanel(mouseX, mouseY);
+        cursorPanel.draw(canvas, PANEL_MARGIN,
+                this.height - PANEL_MARGIN - cursorPanel.height(canvas), mouseX, mouseY);
     }
 
     private void drawGrid(MapCanvas canvas) {
@@ -132,49 +150,75 @@ public final class MapScreen extends Screen {
         return block % major == 0L ? COLOR_GRID_MAJOR : COLOR_GRID_MINOR;
     }
 
-    /** The world context and layer switches, top left. */
-    private void drawContextPanel(MapCanvas canvas, WorldContext context, ChunkRange visible,
-                                  int mouseX, int mouseY) {
+    /** World context, seed controls and layer switches, top left. */
+    private TextPanel buildContextPanel(ActiveWorld world, ChunkRange visible) {
+        WorldContext context = world.context();
+        TextPanel panel = new TextPanel(COLOR_PANEL, COLOR_TEXT_HOVER);
+
+        panel.line(this.getTitle().getString(), COLOR_TEXT);
+        panel.blank();
+        panel.line("Minecraft: " + context.minecraftVersion(), COLOR_TEXT_DIM);
+        panel.line("Mode: " + modeLabel(context), COLOR_TEXT_DIM);
+        panel.line("Dimension: " + dimensionLabel(context), COLOR_TEXT_DIM);
+        panel.line("Profile: " + profileLabel(world), COLOR_TEXT_DIM);
+
+        if (editingSeed) {
+            appendSeedEditor(panel);
+        } else {
+            appendSeedRows(panel, world);
+        }
+
+        panel.blank();
+        panel.line("Layers (click to toggle)", COLOR_TEXT_DIM);
         List<MapLayer> layers = LAYERS.all();
-        String[] lines = new String[CONTEXT_LINES + layers.size()];
-        int[] colors = new int[lines.length];
-
-        lines[0] = this.getTitle().getString();
-        lines[1] = "";
-        lines[2] = "Seed: " + (context.hasSeed() ? Long.toString(context.seed()) : "Unknown");
-        lines[3] = "Minecraft: " + context.minecraftVersion();
-        lines[4] = "Dimension: " + dimensionLabel(context);
-        lines[5] = "Mode: " + modeLabel(context);
-        lines[6] = "Layers (click to toggle)";
-        colors[0] = COLOR_TEXT;
-        for (int i = 1; i < CONTEXT_LINES; i++) {
-            colors[i] = COLOR_TEXT_DIM;
-        }
-
-        String[] reasons = new String[layers.size()];
         for (int i = 0; i < layers.size(); i++) {
             MapLayer layer = layers.get(i);
-            reasons[i] = layer.unavailableReason(context, viewport, visible);
-            lines[CONTEXT_LINES + i] = layer.displayName() + ": " + layerState(layer, reasons[i]);
+            String reason = layer.unavailableReason(world, viewport, visible);
+            panel.action(ACTION_LAYER_BASE + i,
+                    layer.displayName() + ": " + layerState(layer, reason),
+                    layer.isEnabled() && reason == null ? COLOR_TEXT : COLOR_TEXT_DIM);
         }
+        return panel;
+    }
 
-        // Recorded before drawing so hover highlighting and the next click both use this frame's
-        // geometry, and so the row positions come from the same helpers the panel draws with.
-        layerRowsLeft = PANEL_MARGIN;
-        layerRowsRight = panelRight(canvas, lines, PANEL_MARGIN);
-        layerRowsTop = lineTop(canvas, PANEL_MARGIN, CONTEXT_LINES);
-        layerRowHeight = lineHeight(canvas);
-        layerRowCount = layers.size();
+    private void appendSeedRows(TextPanel panel, ActiveWorld world) {
+        panel.line("Seed: " + (world.hasSeed() ? Long.toString(world.seed()) : "Unknown"),
+                world.hasSeed() ? COLOR_TEXT : COLOR_TEXT_DIM);
+        panel.line("Source: " + world.seedSource().displayName(), COLOR_TEXT_DIM);
 
-        int hovered = layerIndexAt(mouseX, mouseY);
-        for (int i = 0; i < layers.size(); i++) {
-            MapLayer layer = layers.get(i);
-            colors[CONTEXT_LINES + i] = i == hovered
-                    ? COLOR_TEXT_HOVER
-                    : (layer.isEnabled() && reasons[i] == null ? COLOR_TEXT : COLOR_TEXT_DIM);
+        // Only worlds Minecraft refuses to tell us about can be edited; a real integrated-server
+        // seed is ground truth and must not be shadowed by a typed one.
+        if (world.acceptsManualSeed()) {
+            panel.blank();
+            panel.action(ACTION_EDIT_SEED, world.hasSeed() ? "[Change seed]" : "[Set seed]", COLOR_TEXT);
+            if (world.hasManualSeed()) {
+                panel.action(ACTION_CLEAR_SEED, "[Clear seed]", COLOR_TEXT);
+            }
         }
+    }
 
-        drawPanel(canvas, lines, colors, PANEL_MARGIN, PANEL_MARGIN);
+    private void appendSeedEditor(TextPanel panel) {
+        panel.line("Seed: " + seedInput + "_", COLOR_TEXT);
+        panel.line("Enter applies, Esc cancels", COLOR_TEXT_DIM);
+        if (seedError != null) {
+            panel.line(seedError, COLOR_TEXT_ERROR);
+        }
+    }
+
+    /** Map and world coordinates under the cursor, bottom left. */
+    private TextPanel buildCursorPanel(int mouseX, int mouseY) {
+        long blockX = (long) Math.floor(viewport.screenToBlockX(mouseX));
+        long blockZ = (long) Math.floor(viewport.screenToBlockZ(mouseY));
+
+        TextPanel panel = new TextPanel(COLOR_PANEL, COLOR_TEXT_HOVER);
+        panel.line("Block   " + blockX + ", " + blockZ, COLOR_TEXT_DIM);
+        panel.line("Chunk   " + (blockX >> 4) + ", " + (blockZ >> 4), COLOR_TEXT_DIM);
+        panel.line("Screen  " + mouseX + ", " + mouseY, COLOR_TEXT_DIM);
+        panel.line("Zoom    " + formatScale(viewport.getScale()), COLOR_TEXT_DIM);
+        panel.line("Center  " + Math.round(viewport.getCenterBlockX()) + ", "
+                + Math.round(viewport.getCenterBlockZ()), COLOR_TEXT_DIM);
+        panel.line("Grid    " + viewport.gridStepBlocks() + " blocks", COLOR_TEXT_DIM);
+        return panel;
     }
 
     private static String layerState(MapLayer layer, String unavailableReason) {
@@ -182,39 +226,6 @@ public final class MapScreen extends Screen {
             return "OFF";
         }
         return unavailableReason == null ? "ON" : "ON (" + unavailableReason + ")";
-    }
-
-    /** @return the index of the layer toggle row under the cursor, or -1. */
-    private int layerIndexAt(double mouseX, double mouseY) {
-        if (layerRowCount <= 0 || layerRowHeight <= 0
-                || mouseX < layerRowsLeft || mouseX >= layerRowsRight
-                || mouseY < layerRowsTop) {
-            return -1;
-        }
-        int index = (int) ((mouseY - layerRowsTop) / layerRowHeight);
-        return index < layerRowCount ? index : -1;
-    }
-
-    /** Map and world coordinates under the cursor, bottom left. */
-    private void drawCursorPanel(MapCanvas canvas, int mouseX, int mouseY) {
-        long blockX = (long) Math.floor(viewport.screenToBlockX(mouseX));
-        long blockZ = (long) Math.floor(viewport.screenToBlockZ(mouseY));
-
-        String[] lines = {
-                "Block   " + blockX + ", " + blockZ,
-                "Chunk   " + (blockX >> 4) + ", " + (blockZ >> 4),
-                "Screen  " + mouseX + ", " + mouseY,
-                "Zoom    " + formatScale(viewport.getScale()),
-                "Center  " + Math.round(viewport.getCenterBlockX()) + ", "
-                        + Math.round(viewport.getCenterBlockZ()),
-                "Grid    " + viewport.gridStepBlocks() + " blocks",
-        };
-        int[] colors = new int[lines.length];
-        for (int i = 0; i < colors.length; i++) {
-            colors[i] = COLOR_TEXT_DIM;
-        }
-        int top = this.height - PANEL_MARGIN - panelHeight(canvas, lines.length);
-        drawPanel(canvas, lines, colors, PANEL_MARGIN, top);
     }
 
     private static String dimensionLabel(WorldContext context) {
@@ -230,36 +241,11 @@ public final class MapScreen extends Screen {
         return context.isInWorld() ? context.playMode().displayName() : "Not in a world";
     }
 
-    private static int lineHeight(MapCanvas canvas) {
-        return canvas.lineHeight() + 1;
-    }
-
-    private static int panelHeight(MapCanvas canvas, int lineCount) {
-        return lineCount * lineHeight(canvas) + PANEL_PADDING * 2;
-    }
-
-    /** Y coordinate of one line of a panel whose top edge is at {@code panelTop}. */
-    private static int lineTop(MapCanvas canvas, int panelTop, int lineIndex) {
-        return panelTop + PANEL_PADDING + lineIndex * lineHeight(canvas);
-    }
-
-    /** X coordinate of the right edge of a panel holding {@code lines}. */
-    private static int panelRight(MapCanvas canvas, String[] lines, int left) {
-        int textWidth = 0;
-        for (String line : lines) {
-            textWidth = Math.max(textWidth, canvas.textWidth(line));
+    private static String profileLabel(ActiveWorld world) {
+        if (world.hasProfile()) {
+            return world.profile().identity().displayName();
         }
-        return left + textWidth + PANEL_PADDING * 2;
-    }
-
-    /** Draws a left-aligned text panel, one colour per line. */
-    private void drawPanel(MapCanvas canvas, String[] lines, int[] colors, int left, int top) {
-        canvas.fill(left, top, panelRight(canvas, lines, left),
-                top + panelHeight(canvas, lines.length), COLOR_PANEL);
-
-        for (int i = 0; i < lines.length; i++) {
-            canvas.text(lines[i], left + PANEL_PADDING, lineTop(canvas, top, i), colors[i]);
-        }
+        return world.context().isInWorld() ? "none for this connection" : "-";
     }
 
     private static String formatScale(double scale) {
@@ -271,18 +257,96 @@ public final class MapScreen extends Screen {
 
     // ------------------------------------------------------------ interaction
 
-    /** Left click either flips a layer switch or starts panning the map. */
+    /** Left click either triggers a panel action or starts panning the map. */
     private boolean onPress(double mouseX, double mouseY, int button) {
         if (button != 0) {
             return false;
         }
-        int layerIndex = layerIndexAt(mouseX, mouseY);
-        if (layerIndex >= 0) {
-            MapLayer layer = LAYERS.all().get(layerIndex);
-            layer.setEnabled(!layer.isEnabled());
+        int action = contextPanel == null
+                ? TextPanel.NO_ACTION
+                : contextPanel.actionAt(mouseX, mouseY);
+        if (action != TextPanel.NO_ACTION) {
+            runAction(action);
             return true;
         }
         dragging = true;
+        return true;
+    }
+
+    private void runAction(int action) {
+        if (action == ACTION_EDIT_SEED) {
+            beginSeedEdit();
+            return;
+        }
+        if (action == ACTION_CLEAR_SEED) {
+            WorldProfileManager.get().clearManualSeed();
+            return;
+        }
+        List<MapLayer> layers = LAYERS.all();
+        int layerIndex = action - ACTION_LAYER_BASE;
+        if (layerIndex >= 0 && layerIndex < layers.size()) {
+            MapLayer layer = layers.get(layerIndex);
+            layer.setEnabled(!layer.isEnabled());
+        }
+    }
+
+    private void beginSeedEdit() {
+        ActiveWorld world = WorldProfileManager.get().currentWorld();
+        editingSeed = true;
+        seedInput = world.hasSeed() ? Long.toString(world.seed()) : "";
+        seedError = null;
+    }
+
+    private void confirmSeedEdit() {
+        if (!SeedParser.isValid(seedInput)) {
+            seedError = "Not a valid seed";
+            return;
+        }
+        if (!WorldProfileManager.get().setManualSeed(SeedParser.parse(seedInput))) {
+            seedError = "This world's seed cannot be set by hand";
+            return;
+        }
+        cancelSeedEdit();
+    }
+
+    private void cancelSeedEdit() {
+        editingSeed = false;
+        seedInput = "";
+        seedError = null;
+    }
+
+    /**
+     * Feeds one typed character into the seed field.
+     *
+     * @return whether the screen consumed the input; while editing it consumes everything, so
+     *         stray keys cannot leak through to the rest of the game
+     */
+    private boolean onCharTyped(int codePoint) {
+        if (!editingSeed) {
+            return false;
+        }
+        boolean digit = codePoint >= '0' && codePoint <= '9';
+        boolean leadingMinus = codePoint == '-' && seedInput.isEmpty();
+        if ((digit || leadingMinus) && seedInput.length() < MAX_SEED_LENGTH) {
+            seedInput += (char) codePoint;
+            seedError = null;
+        }
+        return true;
+    }
+
+    private boolean onKeyPressed(int keyCode) {
+        if (!editingSeed) {
+            return false;
+        }
+        if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+            confirmSeedEdit();
+        } else if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+            // Swallowed so cancelling the field does not also close the whole screen.
+            cancelSeedEdit();
+        } else if (keyCode == GLFW.GLFW_KEY_BACKSPACE && !seedInput.isEmpty()) {
+            seedInput = seedInput.substring(0, seedInput.length() - 1);
+            seedError = null;
+        }
         return true;
     }
 
@@ -360,6 +424,16 @@ public final class MapScreen extends Screen {
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         return zoom(scrollY, mouseX, mouseY) || super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
     }
+
+    @Override
+    public boolean charTyped(CharacterEvent event) {
+        return onCharTyped(event.codepoint()) || super.charTyped(event);
+    }
+
+    @Override
+    public boolean keyPressed(KeyEvent event) {
+        return onKeyPressed(event.key()) || super.keyPressed(event);
+    }
     //?} else {
     /*@Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
@@ -379,6 +453,16 @@ public final class MapScreen extends Screen {
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double amount) {
         return zoom(amount, mouseX, mouseY) || super.mouseScrolled(mouseX, mouseY, amount);
+    }
+
+    @Override
+    public boolean charTyped(char chr, int modifiers) {
+        return onCharTyped(chr) || super.charTyped(chr, modifiers);
+    }
+
+    @Override
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        return onKeyPressed(keyCode) || super.keyPressed(keyCode, scanCode, modifiers);
     }
     *///?}
 }
