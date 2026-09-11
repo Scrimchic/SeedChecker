@@ -13,6 +13,10 @@ import net.minecraft.server.level.ServerLevel;
  *
  * <p>Everything above this class works on {@link WorldContext} and the other Seed Checker models,
  * so a Minecraft API change only has to be absorbed here.
+ *
+ * <p>Client side only: it reaches for {@code Minecraft.getInstance()}, so nothing reachable from
+ * the mod's main entrypoint may call it. This is deliberately the only place in Seed Checker that
+ * touches the client singleton - classes that need world state take a {@link WorldContext}.
  */
 public final class MinecraftBridge {
 

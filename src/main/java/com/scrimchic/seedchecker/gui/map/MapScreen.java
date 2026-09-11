@@ -1,6 +1,11 @@
 package com.scrimchic.seedchecker.gui.map;
 
+import java.util.List;
+
+import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
+import com.scrimchic.seedchecker.gui.map.layer.MapLayer;
+import com.scrimchic.seedchecker.gui.map.layer.MapLayers;
 import com.scrimchic.seedchecker.platform.MinecraftBridge;
 import com.scrimchic.seedchecker.world.DimensionType;
 import com.scrimchic.seedchecker.world.WorldContext;
@@ -35,6 +40,7 @@ public final class MapScreen extends Screen {
     private static final int COLOR_PANEL = 0xB0000000;
     private static final int COLOR_TEXT = 0xFFDCE3EA;
     private static final int COLOR_TEXT_DIM = 0xFF8C98A4;
+    private static final int COLOR_TEXT_HOVER = 0xFFFFD479;
 
     /** Every eighth grid line is drawn brighter. */
     private static final int MAJOR_GRID_MULTIPLE = 8;
@@ -42,12 +48,25 @@ public final class MapScreen extends Screen {
     private static final int PANEL_MARGIN = 6;
     private static final int PANEL_PADDING = 4;
 
+    /** Rows above the layer switches: title, blank, seed, version, dimension, mode, header. */
+    private static final int CONTEXT_LINES = 7;
+
+    /**
+     * Layer switches live for the whole client session rather than per screen, so reopening the
+     * map does not undo them. Saving them to disk comes with the rest of the storage work.
+     */
+    private static final MapLayers LAYERS = MapLayers.createDefault();
+
     private final MapViewport viewport = new MapViewport();
 
-    /** Refreshed every frame so the panel keeps up with dimension changes and world loads. */
-    private WorldContext worldContext = MinecraftBridge.currentWorldContext();
-
     private boolean dragging;
+
+    /** Screen rectangle of the layer toggle rows, recorded while drawing so clicks can hit it. */
+    private int layerRowsLeft;
+    private int layerRowsRight;
+    private int layerRowsTop;
+    private int layerRowHeight;
+    private int layerRowCount;
 
     public MapScreen() {
         super(title());
@@ -65,11 +84,15 @@ public final class MapScreen extends Screen {
 
     private void draw(MapCanvas canvas, int mouseX, int mouseY) {
         viewport.resize(this.width, this.height);
-        worldContext = MinecraftBridge.currentWorldContext();
+
+        // Re-read every frame so the panel keeps up with world loads and dimension changes.
+        WorldContext context = MinecraftBridge.currentWorldContext();
+        ChunkRange visible = ChunkRange.visibleIn(viewport);
 
         canvas.fill(0, 0, this.width, this.height, COLOR_BACKGROUND);
         drawGrid(canvas);
-        drawContextPanel(canvas);
+        LAYERS.renderAll(canvas, viewport, visible, context);
+        drawContextPanel(canvas, context, visible, mouseX, mouseY);
         drawCursorPanel(canvas, mouseX, mouseY);
     }
 
@@ -109,17 +132,67 @@ public final class MapScreen extends Screen {
         return block % major == 0L ? COLOR_GRID_MAJOR : COLOR_GRID_MINOR;
     }
 
-    /** The world context, top left: what Seed Checker currently knows about this world. */
-    private void drawContextPanel(MapCanvas canvas) {
-        String[] lines = {
-                this.getTitle().getString(),
-                "",
-                "Seed: " + (worldContext.hasSeed() ? Long.toString(worldContext.seed()) : "Unknown"),
-                "Minecraft: " + worldContext.minecraftVersion(),
-                "Dimension: " + dimensionLabel(worldContext),
-                "Mode: " + modeLabel(worldContext),
-        };
-        drawPanel(canvas, lines, PANEL_MARGIN, PANEL_MARGIN, 1);
+    /** The world context and layer switches, top left. */
+    private void drawContextPanel(MapCanvas canvas, WorldContext context, ChunkRange visible,
+                                  int mouseX, int mouseY) {
+        List<MapLayer> layers = LAYERS.all();
+        String[] lines = new String[CONTEXT_LINES + layers.size()];
+        int[] colors = new int[lines.length];
+
+        lines[0] = this.getTitle().getString();
+        lines[1] = "";
+        lines[2] = "Seed: " + (context.hasSeed() ? Long.toString(context.seed()) : "Unknown");
+        lines[3] = "Minecraft: " + context.minecraftVersion();
+        lines[4] = "Dimension: " + dimensionLabel(context);
+        lines[5] = "Mode: " + modeLabel(context);
+        lines[6] = "Layers (click to toggle)";
+        colors[0] = COLOR_TEXT;
+        for (int i = 1; i < CONTEXT_LINES; i++) {
+            colors[i] = COLOR_TEXT_DIM;
+        }
+
+        String[] reasons = new String[layers.size()];
+        for (int i = 0; i < layers.size(); i++) {
+            MapLayer layer = layers.get(i);
+            reasons[i] = layer.unavailableReason(context, viewport, visible);
+            lines[CONTEXT_LINES + i] = layer.displayName() + ": " + layerState(layer, reasons[i]);
+        }
+
+        // Recorded before drawing so hover highlighting and the next click both use this frame's
+        // geometry, and so the row positions come from the same helpers the panel draws with.
+        layerRowsLeft = PANEL_MARGIN;
+        layerRowsRight = panelRight(canvas, lines, PANEL_MARGIN);
+        layerRowsTop = lineTop(canvas, PANEL_MARGIN, CONTEXT_LINES);
+        layerRowHeight = lineHeight(canvas);
+        layerRowCount = layers.size();
+
+        int hovered = layerIndexAt(mouseX, mouseY);
+        for (int i = 0; i < layers.size(); i++) {
+            MapLayer layer = layers.get(i);
+            colors[CONTEXT_LINES + i] = i == hovered
+                    ? COLOR_TEXT_HOVER
+                    : (layer.isEnabled() && reasons[i] == null ? COLOR_TEXT : COLOR_TEXT_DIM);
+        }
+
+        drawPanel(canvas, lines, colors, PANEL_MARGIN, PANEL_MARGIN);
+    }
+
+    private static String layerState(MapLayer layer, String unavailableReason) {
+        if (!layer.isEnabled()) {
+            return "OFF";
+        }
+        return unavailableReason == null ? "ON" : "ON (" + unavailableReason + ")";
+    }
+
+    /** @return the index of the layer toggle row under the cursor, or -1. */
+    private int layerIndexAt(double mouseX, double mouseY) {
+        if (layerRowCount <= 0 || layerRowHeight <= 0
+                || mouseX < layerRowsLeft || mouseX >= layerRowsRight
+                || mouseY < layerRowsTop) {
+            return -1;
+        }
+        int index = (int) ((mouseY - layerRowsTop) / layerRowHeight);
+        return index < layerRowCount ? index : -1;
     }
 
     /** Map and world coordinates under the cursor, bottom left. */
@@ -136,8 +209,12 @@ public final class MapScreen extends Screen {
                         + Math.round(viewport.getCenterBlockZ()),
                 "Grid    " + viewport.gridStepBlocks() + " blocks",
         };
+        int[] colors = new int[lines.length];
+        for (int i = 0; i < colors.length; i++) {
+            colors[i] = COLOR_TEXT_DIM;
+        }
         int top = this.height - PANEL_MARGIN - panelHeight(canvas, lines.length);
-        drawPanel(canvas, lines, PANEL_MARGIN, top, 0);
+        drawPanel(canvas, lines, colors, PANEL_MARGIN, top);
     }
 
     private static String dimensionLabel(WorldContext context) {
@@ -161,26 +238,27 @@ public final class MapScreen extends Screen {
         return lineCount * lineHeight(canvas) + PANEL_PADDING * 2;
     }
 
-    /**
-     * Draws a left-aligned text panel. The first {@code highlightedLines} lines are drawn in the
-     * bright colour, the rest dimmed.
-     */
-    private void drawPanel(MapCanvas canvas, String[] lines, int left, int top, int highlightedLines) {
+    /** Y coordinate of one line of a panel whose top edge is at {@code panelTop}. */
+    private static int lineTop(MapCanvas canvas, int panelTop, int lineIndex) {
+        return panelTop + PANEL_PADDING + lineIndex * lineHeight(canvas);
+    }
+
+    /** X coordinate of the right edge of a panel holding {@code lines}. */
+    private static int panelRight(MapCanvas canvas, String[] lines, int left) {
         int textWidth = 0;
         for (String line : lines) {
             textWidth = Math.max(textWidth, canvas.textWidth(line));
         }
+        return left + textWidth + PANEL_PADDING * 2;
+    }
 
-        canvas.fill(left, top,
-                left + textWidth + PANEL_PADDING * 2,
-                top + panelHeight(canvas, lines.length),
-                COLOR_PANEL);
+    /** Draws a left-aligned text panel, one colour per line. */
+    private void drawPanel(MapCanvas canvas, String[] lines, int[] colors, int left, int top) {
+        canvas.fill(left, top, panelRight(canvas, lines, left),
+                top + panelHeight(canvas, lines.length), COLOR_PANEL);
 
-        int y = top + PANEL_PADDING;
         for (int i = 0; i < lines.length; i++) {
-            canvas.text(lines[i], left + PANEL_PADDING, y,
-                    i < highlightedLines ? COLOR_TEXT : COLOR_TEXT_DIM);
-            y += lineHeight(canvas);
+            canvas.text(lines[i], left + PANEL_PADDING, lineTop(canvas, top, i), colors[i]);
         }
     }
 
@@ -193,12 +271,19 @@ public final class MapScreen extends Screen {
 
     // ------------------------------------------------------------ interaction
 
-    private boolean beginDrag(int button) {
-        if (button == 0) {
-            dragging = true;
+    /** Left click either flips a layer switch or starts panning the map. */
+    private boolean onPress(double mouseX, double mouseY, int button) {
+        if (button != 0) {
+            return false;
+        }
+        int layerIndex = layerIndexAt(mouseX, mouseY);
+        if (layerIndex >= 0) {
+            MapLayer layer = LAYERS.all().get(layerIndex);
+            layer.setEnabled(!layer.isEnabled());
             return true;
         }
-        return false;
+        dragging = true;
+        return true;
     }
 
     private boolean endDrag(int button) {
@@ -258,7 +343,7 @@ public final class MapScreen extends Screen {
     //? if >=26.1 {
     @Override
     public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
-        return beginDrag(event.button()) || super.mouseClicked(event, doubleClick);
+        return onPress(event.x(), event.y(), event.button()) || super.mouseClicked(event, doubleClick);
     }
 
     @Override
@@ -278,7 +363,7 @@ public final class MapScreen extends Screen {
     //?} else {
     /*@Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        return beginDrag(button) || super.mouseClicked(mouseX, mouseY, button);
+        return onPress(mouseX, mouseY, button) || super.mouseClicked(mouseX, mouseY, button);
     }
 
     @Override
