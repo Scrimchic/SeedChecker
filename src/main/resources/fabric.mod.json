@@ -7,7 +7,13 @@
   "authors": [
     "Scrimchic"
   ],
-  "environment": "*",
+  "contact": {
+    "homepage": "https://scrimchic.com/",
+    "telegram": "https://t.me/premiumcoder",
+    "sources": "https://github.com/Scrimchic/SeedChecker",
+    "issues": "https://github.com/Scrimchic/SeedChecker/issues"
+  },
+  "environment": "client",
   "entrypoints": {
     "main": [
       "com.scrimchic.seedchecker.SeedChecker"
