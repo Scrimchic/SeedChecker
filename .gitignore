@@ -32,6 +32,13 @@ bin/
 
 run/
 
+# stonecutter
+#
+# versions/ is generated in full: per-target build output, and Minecraft runtime
+# files when a run is launched with a version subproject as its working directory.
+
+versions/
+
 # java
 
 hs_err_*.log
