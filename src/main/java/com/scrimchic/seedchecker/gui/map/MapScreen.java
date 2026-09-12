@@ -2,15 +2,21 @@ package com.scrimchic.seedchecker.gui.map;
 
 import java.util.List;
 
+import com.scrimchic.seedchecker.client.biome.BiomeTileManager;
 import com.scrimchic.seedchecker.client.world.WorldProfileManager;
 import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
+import com.scrimchic.seedchecker.core.map.MapViewportMemory;
 import com.scrimchic.seedchecker.gui.map.layer.MapLayer;
 import com.scrimchic.seedchecker.gui.map.layer.MapLayers;
+import com.scrimchic.seedchecker.platform.MinecraftBridge;
 import com.scrimchic.seedchecker.world.ActiveWorld;
 import com.scrimchic.seedchecker.world.DimensionType;
+import com.scrimchic.seedchecker.world.PlayerPosition;
 import com.scrimchic.seedchecker.world.SeedParser;
 import com.scrimchic.seedchecker.world.WorldContext;
+import com.scrimchic.seedchecker.world.WorldProfile;
+import com.scrimchic.seedchecker.worldgen.biome.BiomeTileStore;
 
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
@@ -48,17 +54,27 @@ public final class MapScreen extends Screen {
     private static final int COLOR_TEXT_DIM = 0xFF8C98A4;
     private static final int COLOR_TEXT_HOVER = 0xFFFFD479;
     private static final int COLOR_TEXT_ERROR = 0xFFE86A6A;
+    private static final int COLOR_SECTION = 0xFF66727E;
+
+    /** Near-black outline plus a white core, so the marker reads over any biome colour. */
+    private static final int COLOR_PLAYER = 0xFFFFFFFF;
+    private static final int COLOR_PLAYER_OUTLINE = 0xFF0B0E11;
 
     /** Every eighth grid line is drawn brighter. */
     private static final int MAJOR_GRID_MULTIPLE = 8;
 
     private static final int PANEL_MARGIN = 6;
 
+    /** Half the player marker's size, used to cull it when it is off screen. */
+    private static final int MARKER_REACH = 8;
+
     /** {@code -9223372036854775808} is the longest seed that can be typed. */
     private static final int MAX_SEED_LENGTH = 20;
 
     private static final int ACTION_EDIT_SEED = 1;
     private static final int ACTION_CLEAR_SEED = 2;
+    private static final int ACTION_CENTER_PLAYER = 3;
+    private static final int ACTION_FOLLOW_PLAYER = 4;
 
     /** Layer toggles occupy the action ids from here upwards, one per layer. */
     private static final int ACTION_LAYER_BASE = 100;
@@ -69,12 +85,20 @@ public final class MapScreen extends Screen {
      */
     private static final MapLayers LAYERS = MapLayers.createDefault();
 
+    /**
+     * Where the map was left, per world, for the life of the client. Like the layer switches it is
+     * session state rather than a saved setting.
+     */
+    private static final MapViewportMemory MEMORY = new MapViewportMemory();
+
     private final MapViewport viewport = new MapViewport();
 
     private boolean dragging;
 
     /** The panel as it was last drawn, kept so a click can be matched against its rows. */
     private TextPanel contextPanel;
+
+    private boolean followPlayer;
 
     private boolean editingSeed;
     private String seedInput = "";
@@ -92,6 +116,47 @@ public final class MapScreen extends Screen {
         //?}
     }
 
+    /**
+     * Chooses where the map starts.
+     *
+     * <p>Runs on open and on resize. The first time the map is opened in a world there is nothing
+     * remembered, so it centres on the player; after that it comes back to wherever it was left.
+     */
+    @Override
+    protected void init() {
+        super.init();
+        viewport.resize(this.width, this.height);
+
+        ActiveWorld world = WorldProfileManager.get().currentWorld();
+        if (MEMORY.restore(memoryKeyOf(world), viewport)) {
+            followPlayer = MEMORY.followPlayer();
+            return;
+        }
+        followPlayer = false;
+        centerOnPlayer();
+    }
+
+    /**
+     * Which world the remembered position belongs to.
+     *
+     * <p>Profile and dimension, deliberately not the seed: typing a seed in changes what the map
+     * draws, not where the player is standing, so it should not move the view.
+     */
+    private static String memoryKeyOf(ActiveWorld world) {
+        WorldProfile profile = world.profile();
+        String base = profile != null ? profile.identity().storageKey() : "no-profile";
+        return base + "|" + world.context().dimensionId();
+    }
+
+    private boolean centerOnPlayer() {
+        PlayerPosition player = MinecraftBridge.currentPlayerPosition();
+        if (player == null) {
+            return false;
+        }
+        viewport.setCenter(player.x(), player.z());
+        return true;
+    }
+
     // ---------------------------------------------------------------- drawing
 
     private void draw(MapCanvas canvas, int mouseX, int mouseY) {
@@ -100,18 +165,52 @@ public final class MapScreen extends Screen {
         // Re-read every frame so the panel keeps up with world loads and dimension changes. The
         // profile behind it is already in memory; nothing here touches the filesystem.
         ActiveWorld world = WorldProfileManager.get().currentWorld();
+        PlayerPosition player = MinecraftBridge.currentPlayerPosition();
+
+        if (followPlayer && player != null) {
+            viewport.setCenter(player.x(), player.z());
+        }
+        MEMORY.remember(memoryKeyOf(world), viewport, followPlayer);
+
         ChunkRange visible = ChunkRange.visibleIn(viewport);
 
         canvas.fill(0, 0, this.width, this.height, COLOR_BACKGROUND);
         drawGrid(canvas);
         LAYERS.renderAll(canvas, viewport, visible, world);
 
-        contextPanel = buildContextPanel(world, visible);
+        // After every layer, so the player is never hidden behind a structure marker.
+        if (player != null) {
+            drawPlayerMarker(canvas, player);
+        }
+
+        contextPanel = buildContextPanel(world, player, visible);
         contextPanel.draw(canvas, PANEL_MARGIN, PANEL_MARGIN, mouseX, mouseY);
 
-        TextPanel cursorPanel = buildCursorPanel(mouseX, mouseY);
-        cursorPanel.draw(canvas, PANEL_MARGIN,
-                this.height - PANEL_MARGIN - cursorPanel.height(canvas), mouseX, mouseY);
+        TextPanel debugPanel = buildDebugPanel(mouseX, mouseY);
+        debugPanel.draw(canvas, PANEL_MARGIN,
+                this.height - PANEL_MARGIN - debugPanel.height(canvas), mouseX, mouseY);
+    }
+
+    /**
+     * A crosshair with a bright core and a dark outline, at a fixed size in pixels.
+     *
+     * <p>Fixed rather than scaled: a marker sized in blocks would vanish when zoomed out and swamp
+     * the map when zoomed in.
+     */
+    private void drawPlayerMarker(MapCanvas canvas, PlayerPosition player) {
+        int centerX = (int) Math.round(viewport.blockToScreenX(player.x()));
+        int centerY = (int) Math.round(viewport.blockToScreenY(player.z()));
+        if (centerX < -MARKER_REACH || centerY < -MARKER_REACH
+                || centerX > this.width + MARKER_REACH || centerY > this.height + MARKER_REACH) {
+            return;
+        }
+
+        canvas.fill(centerX - 7, centerY - 1, centerX + 8, centerY + 2, COLOR_PLAYER_OUTLINE);
+        canvas.fill(centerX - 1, centerY - 7, centerX + 2, centerY + 8, COLOR_PLAYER_OUTLINE);
+        canvas.fill(centerX - 6, centerY, centerX + 7, centerY + 1, COLOR_PLAYER);
+        canvas.fill(centerX, centerY - 6, centerX + 1, centerY + 7, COLOR_PLAYER);
+        canvas.fill(centerX - 3, centerY - 3, centerX + 4, centerY + 4, COLOR_PLAYER_OUTLINE);
+        canvas.fill(centerX - 2, centerY - 2, centerX + 3, centerY + 3, COLOR_PLAYER);
     }
 
     private void drawGrid(MapCanvas canvas) {
@@ -150,18 +249,20 @@ public final class MapScreen extends Screen {
         return block % major == 0L ? COLOR_GRID_MAJOR : COLOR_GRID_MINOR;
     }
 
-    /** World context, seed controls and layer switches, top left. */
-    private TextPanel buildContextPanel(ActiveWorld world, ChunkRange visible) {
+    /** World, player and layers, top left. Grouped so the interesting part is findable. */
+    private TextPanel buildContextPanel(ActiveWorld world, PlayerPosition player,
+                                        ChunkRange visible) {
         WorldContext context = world.context();
         TextPanel panel = new TextPanel(COLOR_PANEL, COLOR_TEXT_HOVER);
 
         panel.line(this.getTitle().getString(), COLOR_TEXT);
-        panel.blank();
-        panel.line("Minecraft: " + context.minecraftVersion(), COLOR_TEXT_DIM);
-        panel.line("Mode: " + modeLabel(context), COLOR_TEXT_DIM);
-        panel.line("Dimension: " + dimensionLabel(context), COLOR_TEXT_DIM);
-        panel.line("Profile: " + profileLabel(world), COLOR_TEXT_DIM);
 
+        panel.blank();
+        panel.line("WORLD", COLOR_SECTION);
+        panel.line("Profile   " + profileLabel(world), COLOR_TEXT_DIM);
+        panel.line("Version   " + context.minecraftVersion(), COLOR_TEXT_DIM);
+        panel.line("Dimension " + dimensionLabel(context), COLOR_TEXT_DIM);
+        panel.line("Mode      " + modeLabel(context), COLOR_TEXT_DIM);
         if (editingSeed) {
             appendSeedEditor(panel);
         } else {
@@ -169,9 +270,13 @@ public final class MapScreen extends Screen {
         }
 
         panel.blank();
-        panel.line("Layers (click to toggle)", COLOR_TEXT_DIM);
+        panel.line("PLAYER", COLOR_SECTION);
+        appendPlayerRows(panel, player);
+
+        panel.blank();
+        panel.line("LAYERS (click to toggle)", COLOR_SECTION);
         // Says it out loud: grid placement picked these chunks, vanilla has not approved them.
-        panel.line("structures = candidate chunks", COLOR_TEXT_DIM);
+        panel.line("structures are candidate chunks", COLOR_TEXT_DIM);
         List<MapLayer> layers = LAYERS.all();
         for (int i = 0; i < layers.size(); i++) {
             MapLayer layer = layers.get(i);
@@ -183,10 +288,23 @@ public final class MapScreen extends Screen {
         return panel;
     }
 
+    private void appendPlayerRows(TextPanel panel, PlayerPosition player) {
+        if (player == null) {
+            panel.line("not in a world", COLOR_TEXT_DIM);
+            return;
+        }
+        panel.line(String.format("X %.1f   Y %.1f   Z %.1f", player.x(), player.y(), player.z()),
+                COLOR_TEXT);
+        panel.line("Chunk     " + player.chunkX() + ", " + player.chunkZ(), COLOR_TEXT_DIM);
+        panel.action(ACTION_CENTER_PLAYER, "[Center on player]", COLOR_TEXT);
+        panel.action(ACTION_FOLLOW_PLAYER, "Follow: " + (followPlayer ? "ON" : "OFF"),
+                followPlayer ? COLOR_TEXT : COLOR_TEXT_DIM);
+    }
+
     private void appendSeedRows(TextPanel panel, ActiveWorld world) {
-        panel.line("Seed: " + (world.hasSeed() ? Long.toString(world.seed()) : "Unknown"),
+        panel.line("Seed      " + (world.hasSeed() ? Long.toString(world.seed()) : "Unknown"),
                 world.hasSeed() ? COLOR_TEXT : COLOR_TEXT_DIM);
-        panel.line("Source: " + world.seedSource().displayName(), COLOR_TEXT_DIM);
+        panel.line("Source    " + world.seedSource().displayName(), COLOR_TEXT_DIM);
 
         // Only worlds Minecraft refuses to tell us about can be edited; a real integrated-server
         // seed is ground truth and must not be shadowed by a typed one.
@@ -200,26 +318,41 @@ public final class MapScreen extends Screen {
     }
 
     private void appendSeedEditor(TextPanel panel) {
-        panel.line("Seed: " + seedInput + "_", COLOR_TEXT);
+        panel.line("Seed      " + seedInput + "_", COLOR_TEXT);
         panel.line("Enter applies, Esc cancels", COLOR_TEXT_DIM);
         if (seedError != null) {
             panel.line(seedError, COLOR_TEXT_ERROR);
         }
     }
 
-    /** Map and world coordinates under the cursor, bottom left. */
-    private TextPanel buildCursorPanel(int mouseX, int mouseY) {
+    /**
+     * Cursor position and engine instrumentation, bottom left.
+     *
+     * <p>Kept in its own dim block so the tile counters do not compete with the world and player
+     * information the map is actually for.
+     */
+    private TextPanel buildDebugPanel(int mouseX, int mouseY) {
         long blockX = (long) Math.floor(viewport.screenToBlockX(mouseX));
         long blockZ = (long) Math.floor(viewport.screenToBlockZ(mouseY));
 
         TextPanel panel = new TextPanel(COLOR_PANEL, COLOR_TEXT_HOVER);
-        panel.line("Block   " + blockX + ", " + blockZ, COLOR_TEXT_DIM);
-        panel.line("Chunk   " + (blockX >> 4) + ", " + (blockZ >> 4), COLOR_TEXT_DIM);
-        panel.line("Screen  " + mouseX + ", " + mouseY, COLOR_TEXT_DIM);
-        panel.line("Zoom    " + formatScale(viewport.getScale()), COLOR_TEXT_DIM);
+        panel.line("DEBUG", COLOR_SECTION);
+        panel.line("Cursor  " + blockX + ", " + blockZ
+                + "   chunk " + (blockX >> 4) + ", " + (blockZ >> 4), COLOR_TEXT_DIM);
+        panel.line("Zoom    " + formatScale(viewport.getScale())
+                + "   grid " + viewport.gridStepBlocks() + " blocks", COLOR_TEXT_DIM);
         panel.line("Center  " + Math.round(viewport.getCenterBlockX()) + ", "
                 + Math.round(viewport.getCenterBlockZ()), COLOR_TEXT_DIM);
-        panel.line("Grid    " + viewport.gridStepBlocks() + " blocks", COLOR_TEXT_DIM);
+
+        // Biome engine instrumentation. Read from a snapshot, never logged per sample.
+        BiomeTileStore.Metrics tiles = BiomeTileManager.get().metrics();
+        panel.line("Tiles   " + tiles.cachedTiles() + " cached, " + tiles.pendingTiles()
+                + " pending, " + tiles.completedTiles() + " built"
+                + (tiles.rejectedTiles() > 0 ? ", " + tiles.rejectedTiles() + " dropped" : "")
+                + (tiles.failedTiles() > 0 ? ", " + tiles.failedTiles() + " failed" : ""),
+                COLOR_TEXT_DIM);
+        panel.line("Tile ms " + String.format("%.1f last, %.1f avg",
+                tiles.lastMillis(), tiles.averageMillis()), COLOR_TEXT_DIM);
         return panel;
     }
 
@@ -282,6 +415,17 @@ public final class MapScreen extends Screen {
         }
         if (action == ACTION_CLEAR_SEED) {
             WorldProfileManager.get().clearManualSeed();
+            return;
+        }
+        if (action == ACTION_CENTER_PLAYER) {
+            centerOnPlayer();
+            return;
+        }
+        if (action == ACTION_FOLLOW_PLAYER) {
+            followPlayer = !followPlayer;
+            if (followPlayer) {
+                centerOnPlayer();
+            }
             return;
         }
         List<MapLayer> layers = LAYERS.all();
@@ -364,6 +508,8 @@ public final class MapScreen extends Screen {
         if (button != 0 || !dragging) {
             return false;
         }
+        // Panning by hand is an explicit "look here", so it takes the map off the player.
+        followPlayer = false;
         viewport.panByPixels(deltaX, deltaY);
         return true;
     }

@@ -105,9 +105,10 @@ tasks {
      */
     register<JavaExec>("worldgenSpike") {
         group = "verification"
-        description = "Runs the arbitrary-seed worldgen spike for this Minecraft version"
+        description = "Runs a worldgen measurement spike for this Minecraft version"
         classpath = sourceSets["test"].runtimeClasspath
-        mainClass = "spike.WorldgenSpike"
+        // -PspikeMain=spike.BiomeTileSpike to run a different measurement.
+        mainClass = providers.gradleProperty("spikeMain").orElse("spike.WorldgenSpike")
         systemProperty("java.awt.headless", "true")
     }
 

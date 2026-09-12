@@ -3,11 +3,13 @@ package com.scrimchic.seedchecker.platform;
 import java.nio.file.Path;
 
 import com.scrimchic.seedchecker.world.PlayMode;
+import com.scrimchic.seedchecker.world.PlayerPosition;
 import com.scrimchic.seedchecker.world.WorldContext;
 import com.scrimchic.seedchecker.world.WorldIdentity;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.server.level.ServerLevel;
@@ -63,6 +65,22 @@ public final class MinecraftBridge {
         }
         return WorldContext.withKnownSeed(
                 MINECRAFT_VERSION, PlayMode.SINGLEPLAYER, dimensionId, serverLevel.getSeed());
+    }
+
+    /**
+     * Where the player currently is.
+     *
+     * <p>{@code getX()}, {@code getY()} and {@code getZ()} are {@code public final} on
+     * {@code Entity} in all three supported versions, so this needs no version branch.
+     *
+     * @return the position, or {@code null} when there is no player - in a menu, or between worlds
+     */
+    public static PlayerPosition currentPlayerPosition() {
+        LocalPlayer player = Minecraft.getInstance().player;
+        if (player == null) {
+            return null;
+        }
+        return new PlayerPosition(player.getX(), player.getY(), player.getZ());
     }
 
     /**

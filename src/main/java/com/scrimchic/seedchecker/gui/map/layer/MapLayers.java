@@ -28,6 +28,8 @@ public final class MapLayers {
      */
     public static MapLayers createDefault() {
         MapLayers created = new MapLayers();
+        // Biomes first, so the map paints under the grid overlays rather than over them.
+        created.add(new BiomeLayer());
         created.add(new SlimeChunkLayer());
 
         StructurePlacements placements = StructurePlacements.forThisVersion();

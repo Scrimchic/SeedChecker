@@ -4,6 +4,7 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.loader.api.FabricLoader;
 
 import com.scrimchic.seedchecker.SeedChecker;
+import com.scrimchic.seedchecker.client.biome.BiomeTileManager;
 import com.scrimchic.seedchecker.client.keybind.SeedCheckerKeyBindings;
 import com.scrimchic.seedchecker.client.world.WorldProfileManager;
 
@@ -15,6 +16,7 @@ public final class SeedCheckerClient implements ClientModInitializer {
         // never from the common entrypoint - a dedicated server must not load client classes.
         WorldProfileManager.initClient(
                 FabricLoader.getInstance().getConfigDir().resolve(SeedChecker.MOD_ID));
+        BiomeTileManager.initClient();
         SeedCheckerKeyBindings.register();
         SeedChecker.LOGGER.info("Seed Checker client initialized.");
     }
