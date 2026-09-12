@@ -1,13 +1,9 @@
 package com.scrimchic.seedchecker.client.biome;
 
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 import com.scrimchic.seedchecker.SeedChecker;
+import com.scrimchic.seedchecker.client.worldgen.WorldgenWorkers;
 import com.scrimchic.seedchecker.platform.BiomeWorldgenSession;
 import com.scrimchic.seedchecker.worldgen.biome.BiomeMapKey;
 import com.scrimchic.seedchecker.worldgen.biome.BiomeTile;
@@ -15,14 +11,13 @@ import com.scrimchic.seedchecker.worldgen.biome.BiomeTileGrid;
 import com.scrimchic.seedchecker.worldgen.biome.BiomeTileKey;
 import com.scrimchic.seedchecker.worldgen.biome.BiomeTileStore;
 
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
-
 /**
  * Runs biome tile generation on background workers.
  *
  * <p>Deliberately thin: every decision about what to generate, what to keep and what to throw away
- * lives in {@link BiomeTileStore}, which is pure and tested. What is left here is the executor, the
- * per-thread {@link BiomeWorldgenSession} and the sampling loop.
+ * lives in {@link BiomeTileStore}, which is pure and tested, and the workers plus their sessions
+ * live in {@link WorldgenWorkers}, shared with structure validation. What is left here is the
+ * sampling loop.
  *
  * <p>The render thread only ever asks "is this tile ready?" and "please start it", and both return
  * immediately. There is no {@code get()}, {@code join()} or sleep anywhere on the render path; a
@@ -39,40 +34,16 @@ public final class BiomeTileManager {
     /** Queue bound, so a sudden change of zoom cannot enqueue thousands of tiles. */
     private static final int MAX_PENDING_TILES = 128;
 
-    private static final int MAX_WORKERS = 3;
-
     private static BiomeTileManager instance;
 
-    private final ExecutorService workers;
     private final BiomeTileStore store =
             new BiomeTileStore(MAX_CACHED_TILES, MAX_PENDING_TILES);
 
-    /** Each worker keeps its own session and replaces it when the world changes. */
-    private final ThreadLocal<ThreadSession> threadSession = new ThreadLocal<ThreadSession>();
-
-    private BiomeTileManager(int workerCount) {
-        this.workers = Executors.newFixedThreadPool(workerCount, new ThreadFactory() {
-            private final AtomicInteger counter = new AtomicInteger();
-
-            @Override
-            public Thread newThread(Runnable runnable) {
-                Thread thread = new Thread(runnable, "seedchecker-biome-" + counter.incrementAndGet());
-                // Daemon and low priority: biome tiles must never keep Minecraft from exiting, and
-                // must never compete with the render thread.
-                thread.setDaemon(true);
-                thread.setPriority(Thread.MIN_PRIORITY);
-                return thread;
-            }
-        });
+    private BiomeTileManager() {
     }
 
     public static void initClient() {
-        int workerCount = Math.max(1,
-                Math.min(MAX_WORKERS, Runtime.getRuntime().availableProcessors() / 2));
-        final BiomeTileManager manager = new BiomeTileManager(workerCount);
-        instance = manager;
-        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> manager.shutdown());
-        SeedChecker.LOGGER.info("Biome tile engine started with " + workerCount + " worker(s).");
+        instance = new BiomeTileManager();
     }
 
     public static BiomeTileManager get() {
@@ -105,35 +76,28 @@ public final class BiomeTileManager {
         if (jobGeneration == BiomeTileStore.NO_JOB) {
             return false;
         }
-        try {
-            workers.execute(() -> runJob(key, jobGeneration));
-            return true;
-        } catch (RejectedExecutionException shuttingDown) {
+        boolean submitted = WorldgenWorkers.get().submit(key.map(),
+                new WorldgenWorkers.SessionTask() {
+                    @Override
+                    public void run(BiomeWorldgenSession session) {
+                        runJob(session, key, jobGeneration);
+                    }
+                });
+        if (!submitted) {
             store.release(key);
-            return false;
         }
+        return submitted;
     }
 
     public BiomeTileStore.Metrics metrics() {
         return store.metrics();
     }
 
-    public void shutdown() {
-        workers.shutdownNow();
-    }
-
-    // --------------------------------------------------------------- worker side
-
-    private void runJob(BiomeTileKey key, int jobGeneration) {
+    private void runJob(BiomeWorldgenSession session, BiomeTileKey key, int jobGeneration) {
         try {
             if (store.isStale(jobGeneration)) {
                 return;
             }
-            BiomeWorldgenSession session = sessionFor(key.map());
-            if (session == null) {
-                return;
-            }
-
             long start = System.nanoTime();
             BiomeTile tile = generate(key, session);
             store.store(key, tile, jobGeneration, System.nanoTime() - start);
@@ -145,21 +109,6 @@ public final class BiomeTileManager {
         } finally {
             store.release(key);
         }
-    }
-
-    private BiomeWorldgenSession sessionFor(BiomeMapKey map) {
-        ThreadSession held = threadSession.get();
-        if (held == null) {
-            held = new ThreadSession();
-            threadSession.set(held);
-        }
-        if (!map.equals(held.map)) {
-            held.session = BiomeWorldgenSession.create(map.seed(), map.dimensionId());
-            // Recorded even when the session came back null, so an unsupported dimension is not
-            // retried once per tile.
-            held.map = map;
-        }
-        return held.session;
     }
 
     private static BiomeTile generate(BiomeTileKey key, BiomeWorldgenSession session) {
@@ -178,10 +127,5 @@ public final class BiomeTileManager {
             }
         }
         return builder.build();
-    }
-
-    private static final class ThreadSession {
-        private BiomeMapKey map;
-        private BiomeWorldgenSession session;
     }
 }

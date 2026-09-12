@@ -6,7 +6,6 @@ import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.gui.map.MapCanvas;
 import com.scrimchic.seedchecker.platform.BiomeWorldgenSession;
 import com.scrimchic.seedchecker.world.ActiveWorld;
-import com.scrimchic.seedchecker.world.WorldProfile;
 import com.scrimchic.seedchecker.worldgen.biome.BiomeMapKey;
 import com.scrimchic.seedchecker.worldgen.biome.BiomeSampleLevel;
 import com.scrimchic.seedchecker.worldgen.biome.BiomeTile;
@@ -98,7 +97,7 @@ public final class BiomeLayer implements MapLayer {
     public void render(MapCanvas canvas, MapViewport viewport, ChunkRange visible,
                        ActiveWorld world) {
         BiomeTileManager manager = BiomeTileManager.get();
-        BiomeMapKey map = mapKeyOf(world);
+        BiomeMapKey map = BiomeMapKey.of(world, sampleY);
         manager.useMap(map);
 
         int step = stepFor(viewport);
@@ -142,16 +141,6 @@ public final class BiomeLayer implements MapLayer {
 
     private static int stepFor(MapViewport viewport) {
         return BiomeSampleLevel.forPixelsPerBlock(viewport.getScale()).blockStep();
-    }
-
-    private BiomeMapKey mapKeyOf(ActiveWorld world) {
-        WorldProfile profile = world.profile();
-        // Biomes depend only on seed, dimension and version, so a world with no profile yet can
-        // safely share a placeholder key: two worlds with the same seed really do have the same
-        // biomes.
-        String worldKey = profile != null ? profile.identity().storageKey() : "no-profile";
-        return new BiomeMapKey(worldKey, world.seed(), world.context().dimensionId(),
-                world.context().minecraftVersion(), sampleY);
     }
 
     /**

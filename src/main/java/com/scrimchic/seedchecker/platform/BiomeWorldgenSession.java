@@ -140,6 +140,21 @@ public final class BiomeWorldgenSession {
         return resolveId(sampleRaw(blockX >> 2, blockY >> 2, blockZ >> 2));
     }
 
+    /**
+     * The biome at a position already expressed in quart coordinates.
+     *
+     * <p>The same call {@link #sampleBiomeId} makes, minus the conversion. Structure validation
+     * works in quart space because that is the space vanilla's own check is defined in - it
+     * converts the structure's block position with {@code QuartPos.fromBlock} before sampling - and
+     * because whole runs of block heights collapse onto one quart row, which is what makes
+     * enumerating a column affordable.
+     *
+     * @return a canonical id such as {@code minecraft:plains}, never {@code null}
+     */
+    public String sampleBiomeIdAtQuart(int quartX, int quartY, int quartZ) {
+        return resolveId(sampleRaw(quartX, quartY, quartZ));
+    }
+
     private String resolveId(Object biome) {
         String cached = biomeIds.get(biome);
         if (cached == null) {
@@ -157,23 +172,47 @@ public final class BiomeWorldgenSession {
 
     private final BiomeSource biomeSource;
     private final Climate.Sampler climate;
+    private final int lowestQuartY;
+    private final int highestQuartY;
 
     private BiomeWorldgenSession(long seed) {
         this.seed = seed;
         HolderLookup.Provider registries = registries();
 
+        NoiseGeneratorSettings settings = registries.lookupOrThrow(Registries.NOISE_SETTINGS)
+                .getOrThrow(NoiseGeneratorSettings.OVERWORLD).value();
+
         // The (Provider, ResourceKey, long) overload of RandomState.create only exists on 26.x,
         // where HolderLookup.Provider gained "extends HolderGetter.Provider"; this one is on both.
         RandomState randomState = RandomState.create(
-                registries.lookupOrThrow(Registries.NOISE_SETTINGS)
-                        .getOrThrow(NoiseGeneratorSettings.OVERWORLD).value(),
-                registries.lookupOrThrow(Registries.NOISE),
-                seed);
+                settings, registries.lookupOrThrow(Registries.NOISE), seed);
 
         this.climate = randomState.sampler();
         this.biomeSource = MultiNoiseBiomeSource.createFromPreset(
                 registries.lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST)
                         .getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD));
+
+        // Every height a terrain-derived structure position can land on, widened by one block at
+        // each end. NoiseBasedChunkGenerator.getBaseHeight walks the column that
+        // NoiseSettings.clampToHeightAccessor produces and falls back to the accessor's minimum,
+        // so the answer never leaves [minY, minY + height]; getFirstOccupiedHeight then subtracts
+        // one. Clamping shrinks the range and never grows it, so taking the unclamped settings
+        // keeps this an over-estimate - which is the safe direction for a filter that must not
+        // hide anything.
+        int minY = settings.noiseSettings().minY();
+        int height = settings.noiseSettings().height();
+        this.lowestQuartY = (minY - 1) >> 2;
+        this.highestQuartY = (minY + height) >> 2;
+    }
+
+    /** Lowest quart row a terrain-derived structure position in this dimension can sample. */
+    public int lowestQuartY() {
+        return lowestQuartY;
+    }
+
+    /** Highest quart row a terrain-derived structure position in this dimension can sample. */
+    public int highestQuartY() {
+        return highestQuartY;
     }
 
     private static synchronized HolderLookup.Provider registries() {

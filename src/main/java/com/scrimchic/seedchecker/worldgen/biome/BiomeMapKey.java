@@ -1,5 +1,8 @@
 package com.scrimchic.seedchecker.worldgen.biome;
 
+import com.scrimchic.seedchecker.world.ActiveWorld;
+import com.scrimchic.seedchecker.world.WorldProfile;
+
 /**
  * Everything that decides <em>which</em> biome map is being drawn, as opposed to which part of it.
  *
@@ -35,6 +38,22 @@ public final class BiomeMapKey {
         this.dimensionId = dimensionId;
         this.minecraftVersion = minecraftVersion;
         this.sampleY = sampleY;
+    }
+
+    /**
+     * Builds the key for the world Seed Checker is currently looking at.
+     *
+     * <p>Biomes depend only on seed, dimension and version, so a world with no stored profile can
+     * safely share a placeholder key: two worlds with the same seed really do have the same biomes.
+     *
+     * @param sampleY the height this map is sampled at; pass the same value for every consumer
+     *                that must share a cache
+     */
+    public static BiomeMapKey of(ActiveWorld world, int sampleY) {
+        WorldProfile profile = world.profile();
+        String worldKey = profile != null ? profile.identity().storageKey() : "no-profile";
+        return new BiomeMapKey(worldKey, world.seed(), world.context().dimensionId(),
+                world.context().minecraftVersion(), sampleY);
     }
 
     public String worldKey() {

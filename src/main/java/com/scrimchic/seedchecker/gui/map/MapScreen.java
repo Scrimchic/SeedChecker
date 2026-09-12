@@ -3,12 +3,14 @@ package com.scrimchic.seedchecker.gui.map;
 import java.util.List;
 
 import com.scrimchic.seedchecker.client.biome.BiomeTileManager;
+import com.scrimchic.seedchecker.client.structure.StructureValidationManager;
 import com.scrimchic.seedchecker.client.world.WorldProfileManager;
 import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.core.map.MapViewportMemory;
 import com.scrimchic.seedchecker.gui.map.layer.MapLayer;
 import com.scrimchic.seedchecker.gui.map.layer.MapLayers;
+import com.scrimchic.seedchecker.gui.map.layer.StructureLayer;
 import com.scrimchic.seedchecker.platform.MinecraftBridge;
 import com.scrimchic.seedchecker.world.ActiveWorld;
 import com.scrimchic.seedchecker.world.DimensionType;
@@ -16,6 +18,7 @@ import com.scrimchic.seedchecker.world.PlayerPosition;
 import com.scrimchic.seedchecker.world.SeedParser;
 import com.scrimchic.seedchecker.world.WorldContext;
 import com.scrimchic.seedchecker.world.WorldProfile;
+import com.scrimchic.seedchecker.worldgen.StructureValidationStore;
 import com.scrimchic.seedchecker.worldgen.biome.BiomeTileStore;
 
 import net.minecraft.client.gui.screens.Screen;
@@ -75,6 +78,7 @@ public final class MapScreen extends Screen {
     private static final int ACTION_CLEAR_SEED = 2;
     private static final int ACTION_CENTER_PLAYER = 3;
     private static final int ACTION_FOLLOW_PLAYER = 4;
+    private static final int ACTION_RAW_CANDIDATES = 5;
 
     /** Layer toggles occupy the action ids from here upwards, one per layer. */
     private static final int ACTION_LAYER_BASE = 100;
@@ -276,7 +280,10 @@ public final class MapScreen extends Screen {
         panel.blank();
         panel.line("LAYERS (click to toggle)", COLOR_SECTION);
         // Says it out loud: grid placement picked these chunks, vanilla has not approved them.
-        panel.line("structures are candidate chunks", COLOR_TEXT_DIM);
+        panel.line("structures are biome-checked candidates", COLOR_TEXT_DIM);
+        panel.action(ACTION_RAW_CANDIDATES,
+                "Raw candidates: " + (StructureLayer.showRawCandidates() ? "ON" : "OFF"),
+                StructureLayer.showRawCandidates() ? COLOR_TEXT : COLOR_TEXT_DIM);
         List<MapLayer> layers = LAYERS.all();
         for (int i = 0; i < layers.size(); i++) {
             MapLayer layer = layers.get(i);
@@ -353,7 +360,36 @@ public final class MapScreen extends Screen {
                 COLOR_TEXT_DIM);
         panel.line("Tile ms " + String.format("%.1f last, %.1f avg",
                 tiles.lastMillis(), tiles.averageMillis()), COLOR_TEXT_DIM);
+
+        StructureValidationStore.Metrics checks = StructureValidationManager.get().metrics();
+        panel.line("Checks  " + checks.accepted() + " kept, " + checks.rejected() + " rejected, "
+                + checks.undecided() + " undecided, " + checks.pendingResults() + " pending"
+                + (checks.discarded() > 0 ? ", " + checks.discarded() + " dropped" : "")
+                + (checks.failed() > 0 ? ", " + checks.failed() + " failed" : ""),
+                COLOR_TEXT_DIM);
+        panel.line("Check ms " + String.format("%.1f avg", checks.averageMillis()), COLOR_TEXT_DIM);
+
+        appendCursorStructures(panel, (int) (blockX >> 4), (int) (blockZ >> 4));
         return panel;
+    }
+
+    /**
+     * Whatever structure candidate sits in the chunk under the cursor, and what the biome check
+     * made of it. The sanity check for "why is this marker here, or missing".
+     */
+    private void appendCursorStructures(TextPanel panel, int chunkX, int chunkZ) {
+        ActiveWorld world = WorldProfileManager.get().currentWorld();
+        List<MapLayer> layers = LAYERS.all();
+        for (int i = 0; i < layers.size(); i++) {
+            if (!(layers.get(i) instanceof StructureLayer)) {
+                continue;
+            }
+            String description =
+                    ((StructureLayer) layers.get(i)).describeAt(world, chunkX, chunkZ);
+            if (description != null) {
+                panel.line("        " + description, COLOR_TEXT);
+            }
+        }
     }
 
     private static String layerState(MapLayer layer, String unavailableReason) {
@@ -419,6 +455,10 @@ public final class MapScreen extends Screen {
         }
         if (action == ACTION_CENTER_PLAYER) {
             centerOnPlayer();
+            return;
+        }
+        if (action == ACTION_RAW_CANDIDATES) {
+            StructureLayer.setShowRawCandidates(!StructureLayer.showRawCandidates());
             return;
         }
         if (action == ACTION_FOLLOW_PLAYER) {
