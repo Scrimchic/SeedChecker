@@ -23,6 +23,19 @@ public final class ChunkRange {
         this.maxChunkZ = maxChunkZ;
     }
 
+    /**
+     * An explicit inclusive chunk rectangle.
+     *
+     * @throws IllegalArgumentException if either axis is inverted
+     */
+    public static ChunkRange of(int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ) {
+        if (minChunkX > maxChunkX || minChunkZ > maxChunkZ) {
+            throw new IllegalArgumentException("Inverted chunk range: "
+                    + minChunkX + ".." + maxChunkX + " by " + minChunkZ + ".." + maxChunkZ);
+        }
+        return new ChunkRange(minChunkX, minChunkZ, maxChunkX, maxChunkZ);
+    }
+
     /** The chunks covered by the viewport, from its top-left corner to its bottom-right one. */
     public static ChunkRange visibleIn(MapViewport viewport) {
         return new ChunkRange(

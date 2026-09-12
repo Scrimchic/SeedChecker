@@ -170,6 +170,8 @@ public final class MapScreen extends Screen {
 
         panel.blank();
         panel.line("Layers (click to toggle)", COLOR_TEXT_DIM);
+        // Says it out loud: grid placement picked these chunks, vanilla has not approved them.
+        panel.line("structures = candidate chunks", COLOR_TEXT_DIM);
         List<MapLayer> layers = LAYERS.all();
         for (int i = 0; i < layers.size(); i++) {
             MapLayer layer = layers.get(i);

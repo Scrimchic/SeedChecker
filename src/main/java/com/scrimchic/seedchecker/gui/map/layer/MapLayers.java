@@ -8,6 +8,8 @@ import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.gui.map.MapCanvas;
 import com.scrimchic.seedchecker.world.ActiveWorld;
+import com.scrimchic.seedchecker.worldgen.StructurePlacements;
+import com.scrimchic.seedchecker.worldgen.StructureType;
 
 /** The ordered set of map layers, drawn bottom to top. */
 public final class MapLayers {
@@ -17,10 +19,21 @@ public final class MapLayers {
     /** Kept as a field: {@link #all()} is called once per frame while drawing the panel. */
     private final List<MapLayer> view = Collections.unmodifiableList(layers);
 
-    /** The layers Seed Checker ships with today. */
+    /**
+     * The layers Seed Checker ships with today.
+     *
+     * <p>Structure layers are created from {@link StructurePlacements#forThisVersion()}, so a
+     * structure the running version does not have simply never becomes a layer - there is no
+     * permanently greyed-out row for ancient cities on 1.16.5.
+     */
     public static MapLayers createDefault() {
         MapLayers created = new MapLayers();
         created.add(new SlimeChunkLayer());
+
+        StructurePlacements placements = StructurePlacements.forThisVersion();
+        for (StructureType type : placements.types()) {
+            created.add(new StructureLayer(type, placements.get(type)));
+        }
         return created;
     }
 
