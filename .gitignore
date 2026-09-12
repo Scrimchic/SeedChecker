@@ -39,6 +39,11 @@ run/
 
 versions/
 
+# local notes and design documents, kept out of the repository on purpose
+
+/Seed_Checker_Project_Concept.md
+/docs/
+
 # java
 
 hs_err_*.log
