@@ -98,6 +98,19 @@ tasks {
         useJUnitPlatform()
     }
 
+    /*
+     * Worldgen research spike. Runs the vanilla worldgen classes headlessly on the test runtime
+     * classpath - no Fabric loader, no window, no world. Deliberately NOT wired into `build`; it
+     * is a throwaway measurement harness for docs/worldgen-engine-spike.md.
+     */
+    register<JavaExec>("worldgenSpike") {
+        group = "verification"
+        description = "Runs the arbitrary-seed worldgen spike for this Minecraft version"
+        classpath = sourceSets["test"].runtimeClasspath
+        mainClass = "spike.WorldgenSpike"
+        systemProperty("java.awt.headless", "true")
+    }
+
     processResources {
         fun MutableMap<String, String>.register(key: String, property: String) {
             val value: String = sc.properties[property]

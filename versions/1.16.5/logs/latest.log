@@ -1,0 +1,11 @@
+[14:48:11] [main/INFO]: [STDOUT]: --- biome probes (y is a block coordinate) ---
+[14:48:11] [main/INFO]: [STDOUT]: --- biome throughput, single thread ---
+[14:48:26] [main/INFO]: [STDOUT]: --- thread safety ---
+[14:48:26] [main/INFO]: [STDOUT]: identical results
+[14:48:26] [main/INFO]: [STDOUT]: identical results
+[14:48:26] [main/INFO]: [STDOUT]: --- structure grid placement in chunks [-64..64] ---
+[14:48:26] [main/INFO]: [STDOUT]:   vanilla = the version's own placement call, pure = reimplemented math
+[14:48:26] [main/INFO]: [STDOUT]: --- strongholds (concentric rings, not a grid) ---
+[14:48:26] [main/INFO]: [STDOUT]:   1.16.5 computes the ring inside ChunkGenerator.generateStrongholds(),
+[14:48:26] [main/INFO]: [STDOUT]:   which is private and runs from the ChunkGenerator constructor, so the
+[14:48:26] [main/INFO]: [STDOUT]:   positions are not reachable without building a full ChunkGenerator.

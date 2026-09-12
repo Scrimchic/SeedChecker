@@ -1,0 +1,10 @@
+[14:49:01] [main/INFO]: [STDOUT]: --- biome probes (y is a block coordinate) ---
+[14:49:01] [main/INFO]: [STDOUT]: --- biome throughput, single thread ---
+[14:49:12] [main/INFO]: [STDOUT]: --- thread safety ---
+[14:49:12] [main/INFO]: [STDOUT]: identical results
+[14:49:12] [main/INFO]: [STDOUT]: identical results
+[14:49:12] [main/INFO]: [STDOUT]: --- structure grid placement in chunks [-64..64] ---
+[14:49:12] [main/INFO]: [STDOUT]:   vanilla = the version's own placement call, pure = reimplemented math
+[14:49:12] [main/INFO]: [STDOUT]:   vanilla path unavailable -> UnsupportedOperationException: Tag TagKey[minecraft:worldgen/biome / minecraft:has_structure/desert_pyramid] can't be dereferenced during construction
+[14:49:12] [main/INFO]: [STDOUT]: --- strongholds (concentric rings, not a grid) ---
+[14:49:12] [main/INFO]: [STDOUT]:   unavailable -> UnsupportedOperationException: Tag TagKey[minecraft:worldgen/biome / minecraft:has_structure/desert_pyramid] can't be dereferenced during construction
