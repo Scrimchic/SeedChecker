@@ -104,9 +104,12 @@ public final class JigsawGenerationSpike {
         }
 
         reportTagsBound();
-        measure(StructureType.ANCIENT_CITY, "ancient_city");
-        measure(StructureType.VILLAGE, "village_plains");
-        measure(StructureType.TRIAL_CHAMBER, "trial_chambers");
+        // Warm the JIT on a throwaway pass, so the first structure measured is not the slowest.
+        measure(StructureType.VILLAGE, "village_plains", 60, false);
+        measure(StructureType.ANCIENT_CITY, "ancient_city", 3000, true);
+        measure(StructureType.VILLAGE, "village_plains", 600, true);
+        measure(StructureType.TRIAL_CHAMBER, "trial_chambers", 400, true);
+        measure(StructureType.DESERT_PYRAMID, "desert_pyramid", 3000, true);
     }
 
     /** The whole vanilla data pack, as a resource manager, with no world and no server. */
@@ -191,88 +194,89 @@ public final class JigsawGenerationSpike {
         //?}
     }
 
-    private static void measure(StructureType type, String variant) {
+    /**
+     * Validation against geometry for one structure entry.
+     *
+     * <p>Validation is the generation point plus the biome test at it. Geometry is what follows for
+     * a structure that passed: the stub's deferred piece assembly ({@code getPiecesBuilder()} then
+     * {@code build()}), and the bounding box over the pieces. Timed apart, on the same candidates.
+     */
+    private static void measure(StructureType type, String variant, int candidates, boolean print) {
         StructurePlacements placements = StructurePlacements.forThisVersion();
         if (!placements.supports(type)) {
             return;
         }
-        System.out.println();
-        System.out.println("--- " + type.name().toLowerCase() + " / " + variant + " ---");
-
         final net.minecraft.world.level.levelgen.structure.Structure structure;
         try {
             structure = structure(variant);
         } catch (Throwable missing) {
-            System.out.println("  not in this version: " + missing);
             return;
         }
-
         java.util.Set<String> accepted = com.scrimchic.seedchecker.platform.StructureBiomeValidator
                 .acceptedBiomes(type, variant);
 
-        List<int[]> chunks = candidates(placements.get(type), 400);
-        int assembled = 0;
-        int biomeValid = 0;
-        int failed = 0;
-        int maxOffsetX = 0;
-        int maxOffsetZ = 0;
-        int minY = Integer.MAX_VALUE;
-        int maxY = Integer.MIN_VALUE;
-        long totalNanos = 0;
+        List<int[]> chunks = candidates(placements.get(type), candidates);
+        long validationNanos = 0;
+        long piecesNanos = 0;
+        long boxNanos = 0;
+        long maxPiecesNanos = 0;
+        int structures = 0;
+        long pieceCount = 0;
+        long spanX = 0;
+        long spanY = 0;
+        long spanZ = 0;
         int printed = 0;
 
         for (int[] chunk : chunks) {
             long start = System.nanoTime();
-            java.util.Optional<net.minecraft.world.level.levelgen.structure.Structure.GenerationStub> stub;
-            try {
-                // An always-true biome predicate, so the two halves of vanilla's answer can be
-                // counted apart: whether the jigsaw assembled a start piece at all, and whether the
-                // biome at the position it chose is accepted.
-                stub = structure.findValidGenerationPoint(context(chunk[0], chunk[1]));
-            } catch (Throwable failure) {
-                if (failed == 0) {
-                    System.out.println("  BLOCKER at chunk " + chunk[0] + "," + chunk[1] + ": "
-                            + failure);
-                    failure.printStackTrace(System.out);
-                }
-                failed++;
+            java.util.Optional<net.minecraft.world.level.levelgen.structure.Structure.GenerationStub> stub =
+                    structure.findValidGenerationPoint(context(chunk[0], chunk[1]));
+            boolean real = stub.isPresent() && accepted.contains(biomeIdAt(stub.get().position()));
+            validationNanos += System.nanoTime() - start;
+            if (!real || structures >= 80) {
                 continue;
             }
-            totalNanos += System.nanoTime() - start;
 
-            if (!stub.isPresent()) {
-                continue;
-            }
-            assembled++;
-            net.minecraft.core.BlockPos position = stub.get().position();
-            int centreX = (chunk[0] << 4) + 8;
-            int centreZ = (chunk[1] << 4) + 8;
-            maxOffsetX = Math.max(maxOffsetX, Math.abs(position.getX() - centreX));
-            maxOffsetZ = Math.max(maxOffsetZ, Math.abs(position.getZ() - centreZ));
-            minY = Math.min(minY, position.getY());
-            maxY = Math.max(maxY, position.getY());
+            long piecesStart = System.nanoTime();
+            net.minecraft.world.level.levelgen.structure.pieces.PiecesContainer pieces =
+                    stub.get().getPiecesBuilder().build();
+            long piecesEnd = System.nanoTime();
+            net.minecraft.world.level.levelgen.structure.BoundingBox box = pieces.calculateBoundingBox();
+            long boxEnd = System.nanoTime();
 
-            String biomeId = biomeIdAt(position);
-            if (accepted.contains(biomeId)) {
-                biomeValid++;
-            }
-            if (printed < 5) {
-                System.out.printf("  chunk %6d,%6d  stub %7d,%5d,%7d  offset %+4d,%+4d  %s%n",
-                        chunk[0], chunk[1], position.getX(), position.getY(), position.getZ(),
-                        position.getX() - centreX, position.getZ() - centreZ, biomeId);
+            piecesNanos += piecesEnd - piecesStart;
+            maxPiecesNanos = Math.max(maxPiecesNanos, piecesEnd - piecesStart);
+            boxNanos += boxEnd - piecesEnd;
+            structures++;
+            pieceCount += pieces.pieces().size();
+            spanX += box.maxX() - box.minX() + 1;
+            spanY += box.maxY() - box.minY() + 1;
+            spanZ += box.maxZ() - box.minZ() + 1;
+
+            if (print && printed < 3) {
+                net.minecraft.core.BlockPos p = stub.get().position();
+                System.out.printf("  chunk %6d,%6d  stub %d,%d,%d  pieces %d  box x %d..%d  y %d..%d  z %d..%d%n",
+                        chunk[0], chunk[1], p.getX(), p.getY(), p.getZ(), pieces.pieces().size(),
+                        box.minX(), box.maxX(), box.minY(), box.maxY(), box.minZ(), box.maxZ());
                 printed++;
             }
         }
-
-        System.out.printf("  candidates %d, start piece assembled %d, biome accepted %d, threw %d%n",
-                chunks.size(), assembled, biomeValid, failed);
-        System.out.printf("  max |offset| from chunk centre: X %d, Z %d blocks%n",
-                maxOffsetX, maxOffsetZ);
-        if (assembled > 0) {
-            System.out.printf("  stub Y range: %d .. %d%n", minY, maxY);
+        if (!print) {
+            return;
         }
-        System.out.printf("  %.2f ms per candidate%n",
-                totalNanos / 1e6 / Math.max(1, chunks.size()));
+        System.out.printf("--- %s: %d candidates, %d real structures measured%n", variant,
+                chunks.size(), structures);
+        System.out.printf("  validation      %.3f ms per candidate%n",
+                validationNanos / 1e6 / Math.max(1, chunks.size()));
+        if (structures > 0) {
+            System.out.printf("  pieces          %.3f ms per structure (max %.1f ms), %.1f pieces%n",
+                    piecesNanos / 1e6 / structures, maxPiecesNanos / 1e6,
+                    (double) pieceCount / structures);
+            System.out.printf("  bounding box    %.4f ms per structure, mean span %d x %d x %d%n",
+                    boxNanos / 1e6 / structures, spanX / structures, spanY / structures,
+                    spanZ / structures);
+        }
+        System.out.println();
     }
 
     private static String biomeIdAt(net.minecraft.core.BlockPos position) {

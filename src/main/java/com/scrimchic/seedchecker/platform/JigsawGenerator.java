@@ -8,6 +8,8 @@ import java.util.Optional;
 import java.util.function.Predicate;
 
 import com.scrimchic.seedchecker.worldgen.GenerationPoint;
+import com.scrimchic.seedchecker.worldgen.StructureBounds;
+import com.scrimchic.seedchecker.worldgen.StructureGeometry;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
@@ -27,6 +29,7 @@ import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.WorldgenRandom;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 //?}
@@ -90,18 +93,51 @@ final class JigsawGenerator {
      * @return the stub position, or {@code null} when vanilla produced no start piece
      */
     GenerationPoint generationPoint(String structureId, int chunkX, int chunkZ) {
-        Structure structure = data.structure(structureId);
-        if (structure == null) {
-            throw new IllegalStateException("the vanilla data pack has no structure " + structureId);
-        }
-        Optional<Structure.GenerationStub> stub = structure.findValidGenerationPoint(
-                new Structure.GenerationContext(registries, chunkGenerator, biomeSource, randomState,
-                        templates, seed, new ChunkPos(chunkX, chunkZ), heightAccessor, ANY_BIOME));
+        Optional<Structure.GenerationStub> stub = stub(structureId, chunkX, chunkZ);
         if (!stub.isPresent()) {
             return null;
         }
         BlockPos position = stub.get().position();
         return new GenerationPoint(position.getX(), position.getY(), position.getZ());
+    }
+
+    /**
+     * The full extent of the structure vanilla assembles from that generation point.
+     *
+     * <p>{@code getPiecesBuilder()} runs the assembly vanilla deferred into the stub - for a jigsaw,
+     * every piece out to its size and maximum distance - and {@code calculateBoundingBox()}
+     * encapsulates the pieces' boxes, which is exactly what {@code StructureStart.getBoundingBox()}
+     * computes before inflating it by 12 for terrain adaptation. No start is built and no chunk is
+     * touched. Expensive: a plains village measured about a second.
+     *
+     * @return the geometry, or {@code null} when vanilla produced no start piece
+     */
+    StructureGeometry geometry(String structureId, int chunkX, int chunkZ) {
+        Optional<Structure.GenerationStub> stub = stub(structureId, chunkX, chunkZ);
+        if (!stub.isPresent()) {
+            return null;
+        }
+        BlockPos position = stub.get().position();
+        BoundingBox box = stub.get().getPiecesBuilder().build().calculateBoundingBox();
+        return StructureGeometry.of(
+                new GenerationPoint(position.getX(), position.getY(), position.getZ()),
+                new StructureBounds(box.minX(), box.minY(), box.minZ(),
+                        box.maxX(), box.maxY(), box.maxZ()));
+    }
+
+    /**
+     * Each call builds a fresh context and with it a fresh {@code WorldgenRandom} seeded from the
+     * world seed and chunk, as vanilla does per attempt - which is why the geometry assembled later
+     * starts from the very same draw the validation did.
+     */
+    private Optional<Structure.GenerationStub> stub(String structureId, int chunkX, int chunkZ) {
+        Structure structure = data.structure(structureId);
+        if (structure == null) {
+            throw new IllegalStateException("the vanilla data pack has no structure " + structureId);
+        }
+        return structure.findValidGenerationPoint(
+                new Structure.GenerationContext(registries, chunkGenerator, biomeSource, randomState,
+                        templates, seed, new ChunkPos(chunkX, chunkZ), heightAccessor, ANY_BIOME));
     }
 
     /** The biome {@code Structure.isValidBiome} would test at that point. */

@@ -286,6 +286,15 @@ public final class StructureBiomeValidator {
     }
 
     /**
+     * The full id of an entry vanilla assembles through the jigsaw system - what geometry needs to
+     * rebuild exactly the structure validation found - or {@code null} for any other entry.
+     */
+    static String jigsawStructureId(StructureType type, String variantName) {
+        Entry entry = entryOf(type, variantName);
+        return entry != null && entry.position == Position.JIGSAW ? entry.structureId : null;
+    }
+
+    /**
      * The biome tag an entry named in the datapack, or {@code null} on a version that has no
      * tags - 1.16.5 keeps the association on the biome instead.
      */

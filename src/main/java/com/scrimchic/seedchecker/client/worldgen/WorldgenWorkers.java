@@ -19,7 +19,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
  * and one session per worker thread, replaced when the world changes. Two pools would mean twice
  * the sessions, twice the registry memory, and twice the setup cost for no benefit.
  *
- * <h2>Two lanes, taken in turn</h2>
+ * <h2>Lanes, taken in turn</h2>
  *
  * <p>One pool, but not one first-in-first-out queue. Exact jigsaw validation made a village check
  * cost around 20 ms, and a screenful at 16 blocks per pixel queues hundreds of them; measured behind
@@ -37,7 +37,14 @@ public final class WorldgenWorkers {
     /** What kind of work a task is, which decides the queue it waits in. */
     public enum Lane {
         BIOME_TILES,
-        STRUCTURE_CHECKS
+        STRUCTURE_CHECKS,
+
+        /**
+         * Assembling a selected structure's pieces. Its own lane because one job can take seconds
+         * and is asked for by a click: it must not wait behind a queue of checks, and must not hold
+         * up tiles or checks by more than one job per worker either.
+         */
+        STRUCTURE_GEOMETRY
     }
 
     private static final int MAX_WORKERS = 3;

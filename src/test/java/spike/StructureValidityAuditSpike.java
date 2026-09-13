@@ -32,7 +32,7 @@ public final class StructureValidityAuditSpike {
     private static final long SEED = -7407337299659424542L;
 
     /** Wide enough that every biome a structure cares about actually turns up. */
-    private static final int RADIUS_CHUNKS = 2000;
+    private static final int RADIUS_CHUNKS = 600;
 
     private static String version() {
         return /*$ minecraft*/ "unknown";
@@ -104,10 +104,17 @@ public final class StructureValidityAuditSpike {
             int oursOnly = 0;
             int vanillaOnly = 0;
 
+            generateNanos = 0;
+            generatedStarts = 0;
+            generatedPieces = 0;
+            printedBoxes = 0;
+            long validationNanos = 0;
             for (int[] chunk : candidateChunks(placements.get(type))) {
                 candidates++;
+                long validationStart = System.nanoTime();
                 boolean ours = StructureBiomeValidator
                         .validate(session, type, chunk[0], chunk[1]).isCompatible();
+                validationNanos += System.nanoTime() - validationStart;
                 boolean vanilla = vanillaGenerates(registries, chunkGenerator, biomeSource,
                         templates, feature, chunk[0], chunk[1]);
                 if (ours) {
@@ -134,8 +141,18 @@ public final class StructureValidityAuditSpike {
 
             System.out.printf("%-16s %10d %10d %10d %12d %12d%n", type.name().toLowerCase(),
                     candidates, biomeOk, vanillaOk, oursOnly, vanillaOnly);
+            System.out.printf("    validation %.3f ms/candidate; generate() with pieces %.2f ms/structure, "
+                            + "%.1f pieces%n",
+                    validationNanos / 1e6 / Math.max(1, candidates),
+                    generateNanos / 1e6 / Math.max(1, generatedStarts),
+                    (double) generatedPieces / Math.max(1, generatedStarts));
         }
     }
+
+    private static long generateNanos;
+    private static int generatedStarts;
+    private static long generatedPieces;
+    private static int printedBoxes;
 
     /^*
      * Vanilla's own answer, assembled the way {@code ChunkGenerator.createStructures} does it:
@@ -166,9 +183,22 @@ public final class StructureValidityAuditSpike {
             if (placement == null) {
                 return false;
             }
+            long generateStart = System.nanoTime();
             net.minecraft.world.level.levelgen.structure.StructureStart<?> start = configured.generate(
                     registries, chunkGenerator, biomeSource, templates, SEED,
                     new net.minecraft.world.level.ChunkPos(chunkX, chunkZ), biome, 0, placement);
+            generateNanos += System.nanoTime() - generateStart;
+            if (start.isValid()) {
+                generatedStarts++;
+                generatedPieces += start.getPieces().size();
+                if (printedBoxes < 3) {
+                    net.minecraft.world.level.levelgen.structure.BoundingBox box = start.getBoundingBox();
+                    System.out.printf("    chunk %d,%d  box x %d..%d  y %d..%d  z %d..%d  (%d pieces)%n",
+                            chunkX, chunkZ, box.x0, box.x1, box.y0, box.y1, box.z0, box.z1,
+                            start.getPieces().size());
+                    printedBoxes++;
+                }
+            }
             return start.isValid();
         }
         return false;

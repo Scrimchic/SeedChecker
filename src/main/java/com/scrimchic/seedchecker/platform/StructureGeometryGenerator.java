@@ -1,0 +1,261 @@
+package com.scrimchic.seedchecker.platform;
+
+import com.scrimchic.seedchecker.worldgen.StructureGeometry;
+import com.scrimchic.seedchecker.worldgen.StructureType;
+
+//? if >=1.18 {
+import com.scrimchic.seedchecker.core.util.LazyInit;
+//?} else {
+/*import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.function.Supplier;
+
+import com.scrimchic.seedchecker.worldgen.StructureBounds;
+
+import net.minecraft.core.RegistryAccess;
+import net.minecraft.data.BuiltinRegistries;
+import net.minecraft.server.packs.PackType;
+import net.minecraft.server.packs.VanillaPackResources;
+import net.minecraft.server.packs.resources.SimpleReloadableResourceManager;
+import net.minecraft.util.datafix.DataFixers;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.biome.OverworldBiomeSource;
+import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
+import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
+import net.minecraft.world.level.levelgen.StructureSettings;
+import net.minecraft.world.level.levelgen.feature.ConfiguredStructureFeature;
+import net.minecraft.world.level.levelgen.feature.StructureFeature;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
+import net.minecraft.world.level.levelgen.structure.StructurePiece;
+import net.minecraft.world.level.levelgen.structure.StructureStart;
+import net.minecraft.world.level.levelgen.structure.templatesystem.StructureManager;
+import net.minecraft.world.level.storage.LevelStorageSource;*/
+//?}
+
+/**
+ * The full extent of an exactly validated structure, assembled by vanilla.
+ *
+ * <h2>1.18 onwards</h2>
+ *
+ * <p>No {@code StructureStart}. A jigsaw's {@code GenerationStub} already carries its piece
+ * assembly, deferred; {@code getPiecesBuilder()} runs it, {@code build()} hands the pieces over, and
+ * {@code PiecesContainer.calculateBoundingBox()} encapsulates every piece's box. That is the whole
+ * of what {@code StructureStart.getBoundingBox()} does too, except that for a structure with terrain
+ * adaptation (village, ancient city, trial chamber) it inflates the result by 12 blocks - the reach
+ * of the terrain beard, not of the structure - so that inflation is left out here.
+ *
+ * <h2>1.16.5</h2>
+ *
+ * <p>No stub exists; pieces are built into a {@code StructureStart} by {@code generatePieces}, which
+ * is the only path, so a start is built through {@code ConfiguredStructureFeature.generate} exactly
+ * as {@code ChunkGenerator.createStructures} would, and the extent of its pieces is read back. Not
+ * the start's own box: the village's start is a {@code BeardedStructureStart}, whose
+ * {@code calculateBoundingBox} inflates the pieces' extent by 12 - the same beard inflation modern
+ * versions moved into {@code Structure.adjustBoundingBox} - so both versions report the same
+ * thing.
+ *
+ * <h2>Where there is no exact geometry</h2>
+ *
+ * <p>The desert pyramid on every version, and the shipwreck on 1.16.5, are single pieces built at a
+ * placeholder height - y 64, and y 90 - that vanilla only corrects while placing them into the
+ * world, from the heightmap of chunks that have already been generated
+ * ({@code updateHeightPositionToLowestGroundHeight}, {@code updateAverageGroundHeight},
+ * {@code WorldGenLevel.getHeight}). Their horizontal footprint is exact, their vertical extent is
+ * not knowable without generating chunks, so no bounds are claimed for them. The modern shipwreck
+ * is not exactly validated in the first place.
+ */
+public final class StructureGeometryGenerator {
+
+    private static final String NOT_EXACT = "not computed for a non-exact structure";
+
+    private static final String HEIGHT_AT_PLACEMENT =
+            "its height is only fixed when the chunk generates";
+
+    private static final String NO_START = "vanilla assembled no structure start";
+
+    private StructureGeometryGenerator() {
+    }
+
+    //? if >=1.18 {
+    private static final String DATA_UNAVAILABLE = "vanilla structure data could not be loaded";
+
+    /**
+     * Assembles the structure vanilla builds at that candidate and measures it.
+     *
+     * <p>Worker threads only: a village takes about a second.
+     *
+     * @param variant the entry validation found vanilla builds, e.g. {@code village_plains}
+     * @return the geometry, or {@code null} while vanilla structure data is still loading on another
+     *         worker
+     */
+    public static StructureGeometry generate(BiomeWorldgenSession session, StructureType type,
+                                             String variant, int chunkX, int chunkZ) {
+        String structureId = variant == null
+                ? null : StructureBiomeValidator.jigsawStructureId(type, variant);
+        if (structureId == null) {
+            return StructureGeometry.unavailable(
+                    type == StructureType.SHIPWRECK ? NOT_EXACT : HEIGHT_AT_PLACEMENT);
+        }
+        LazyInit.State state = session.prepareJigsaw();
+        if (state == LazyInit.State.FAILED) {
+            return StructureGeometry.unavailable(DATA_UNAVAILABLE);
+        }
+        if (state != LazyInit.State.READY) {
+            return null;
+        }
+        StructureGeometry geometry = session.jigsawGeometry(structureId, chunkX, chunkZ);
+        return geometry != null ? geometry : StructureGeometry.unavailable(NO_START);
+    }
+    //?} else {
+    /*/^* Per worker: the template manager's repository is a plain HashMap on this version. ^/
+    private static final ThreadLocal<LegacyStructureWorld> WORLDS =
+            new ThreadLocal<LegacyStructureWorld>();
+
+    private static boolean structuresBootstrapped;
+
+    /^*
+     * Builds the start vanilla builds at that candidate and reads its bounding box. Only the
+     * village has exact geometry here; see the class comment for the other two.
+     *
+     * @return the geometry; never {@code null} on this version, which has no data to wait for
+     ^/
+    public static StructureGeometry generate(BiomeWorldgenSession session, StructureType type,
+                                             String variant, int chunkX, int chunkZ) {
+        if (type != StructureType.VILLAGE) {
+            return StructureGeometry.unavailable(HEIGHT_AT_PLACEMENT);
+        }
+        LegacyStructureWorld world = worldFor(session);
+        OverworldBiomeSource biomeSource = session.legacyBiomeSource();
+        Biome biome = biomeSource.getNoiseBiome((chunkX << 2) + 2, 0, (chunkZ << 2) + 2);
+
+        for (Supplier<ConfiguredStructureFeature<?, ?>> supplier
+                : biome.getGenerationSettings().structures()) {
+            ConfiguredStructureFeature<?, ?> configured = supplier.get();
+            if (configured.feature != StructureFeature.VILLAGE) {
+                continue;
+            }
+            StructureStart<?> start = configured.generate(world.registries, world.chunkGenerator,
+                    biomeSource, world.templates, session.seed(), new ChunkPos(chunkX, chunkZ),
+                    biome, 0, StructureSettings.DEFAULTS.get(StructureFeature.VILLAGE));
+            if (!start.isValid()) {
+                return StructureGeometry.unavailable(NO_START);
+            }
+            // This version computes no generation point. The start's own box is inflated by 12 for
+            // the beard, so the pieces are measured directly instead.
+            int minX = Integer.MAX_VALUE;
+            int minY = Integer.MAX_VALUE;
+            int minZ = Integer.MAX_VALUE;
+            int maxX = Integer.MIN_VALUE;
+            int maxY = Integer.MIN_VALUE;
+            int maxZ = Integer.MIN_VALUE;
+            for (StructurePiece piece : start.getPieces()) {
+                BoundingBox box = piece.getBoundingBox();
+                minX = Math.min(minX, box.x0);
+                minY = Math.min(minY, box.y0);
+                minZ = Math.min(minZ, box.z0);
+                maxX = Math.max(maxX, box.x1);
+                maxY = Math.max(maxY, box.y1);
+                maxZ = Math.max(maxZ, box.z1);
+            }
+            return StructureGeometry.of(null,
+                    new StructureBounds(minX, minY, minZ, maxX, maxY, maxZ));
+        }
+        return StructureGeometry.unavailable(NO_START);
+    }
+
+    private static final class LegacyStructureWorld {
+        private final BiomeWorldgenSession session;
+        private final RegistryAccess registries;
+        private final ChunkGenerator chunkGenerator;
+        private final StructureManager templates;
+
+        LegacyStructureWorld(BiomeWorldgenSession session, RegistryAccess registries,
+                             ChunkGenerator chunkGenerator, StructureManager templates) {
+            this.session = session;
+            this.registries = registries;
+            this.chunkGenerator = chunkGenerator;
+            this.templates = templates;
+        }
+    }
+
+    private static LegacyStructureWorld worldFor(BiomeWorldgenSession session) {
+        LegacyStructureWorld held = WORLDS.get();
+        if (held != null && held.session == session) {
+            return held;
+        }
+        ensureStructuresBootstrapped();
+        final NoiseGeneratorSettings settings = BuiltinRegistries.NOISE_GENERATOR_SETTINGS
+                .getOrThrow(NoiseGeneratorSettings.OVERWORLD);
+        ChunkGenerator chunkGenerator = new NoiseBasedChunkGenerator(session.legacyBiomeSource(),
+                session.seed(), () -> settings);
+        LegacyStructureWorld created = new LegacyStructureWorld(session, RegistryAccess.builtin(),
+                chunkGenerator, openTemplateManager());
+        WORLDS.set(created);
+        return created;
+    }
+
+    /^* The village's template pools are registered by this, and must be before a start is built. ^/
+    private static synchronized void ensureStructuresBootstrapped() {
+        if (!structuresBootstrapped) {
+            StructureFeature.bootstrap();
+            structuresBootstrapped = true;
+        }
+    }
+
+    /^*
+     * A template manager over the vanilla data pack. Its constructor reads the save's generated
+     * structures path from the level access and keeps only the path, so a throwaway access over a
+     * temporary directory is opened, closed and deleted at once.
+     ^/
+    private static StructureManager openTemplateManager() {
+        try {
+            SimpleReloadableResourceManager resources =
+                    new SimpleReloadableResourceManager(PackType.SERVER_DATA);
+            resources.add(new VanillaPackResources("minecraft"));
+            Path temporary = Files.createTempDirectory("seedchecker-templates");
+            try {
+                LevelStorageSource.LevelStorageAccess access =
+                        LevelStorageSource.createDefault(temporary).createAccess("templates");
+                try {
+                    return new StructureManager(resources, access, DataFixers.getDataFixer());
+                } finally {
+                    access.close();
+                }
+            } finally {
+                deleteRecursively(temporary);
+            }
+        } catch (IOException failure) {
+            throw new UncheckedIOException(failure);
+        }
+    }
+
+    private static void deleteRecursively(Path root) {
+        try {
+            Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attributes)
+                        throws IOException {
+                    Files.deleteIfExists(file);
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult postVisitDirectory(Path directory, IOException failure)
+                        throws IOException {
+                    Files.deleteIfExists(directory);
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (IOException ignored) {
+            // A leftover empty temp directory is not worth failing geometry over.
+        }
+    }
+    *///?}
+}

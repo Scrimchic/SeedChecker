@@ -14,6 +14,7 @@ import java.util.logging.Level;
 import com.scrimchic.seedchecker.SeedChecker;
 import com.scrimchic.seedchecker.core.util.LazyInit;
 import com.scrimchic.seedchecker.worldgen.GenerationPoint;
+import com.scrimchic.seedchecker.worldgen.StructureGeometry;
 
 import net.minecraft.SharedConstants;
 import net.minecraft.core.Holder;
@@ -340,6 +341,16 @@ public final class BiomeWorldgenSession {
         return JigsawGenerator.selectionOrder(weights, seed, chunkX, chunkZ);
     }
 
+    /**
+     * Vanilla's own assembly of a jigsaw structure, measured. Only after {@link #prepareJigsaw}
+     * returned {@code READY}; expensive, see {@link JigsawGenerator#geometry}.
+     *
+     * @return the geometry, or {@code null} when vanilla assembles no start piece there
+     */
+    public StructureGeometry jigsawGeometry(String structureId, int chunkX, int chunkZ) {
+        return jigsaw.geometry(structureId, chunkX, chunkZ);
+    }
+
     private static synchronized HolderLookup.Provider registries() {
         if (sharedRegistries == null) {
             // Registry contents only - no tags are bound, and none are needed for biomes. This is
@@ -381,6 +392,11 @@ public final class BiomeWorldgenSession {
 
     private Object sampleRaw(int quartX, int quartY, int quartZ) {
         return biomeSource.getNoiseBiome(quartX, quartY, quartZ);
+    }
+
+    /^* This session's biome source, for building a structure start from it on this worker. ^/
+    OverworldBiomeSource legacyBiomeSource() {
+        return biomeSource;
     }
 
     private String readId(Object biome) {

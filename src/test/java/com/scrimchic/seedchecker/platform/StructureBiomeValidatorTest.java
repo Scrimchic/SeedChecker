@@ -27,6 +27,8 @@ import java.util.function.Predicate;
 import com.scrimchic.seedchecker.core.util.LazyInit;
 import com.scrimchic.seedchecker.worldgen.GenerationPoint;
 import com.scrimchic.seedchecker.worldgen.StructureBiomeStatus;
+import com.scrimchic.seedchecker.worldgen.StructureBounds;
+import com.scrimchic.seedchecker.worldgen.StructureGeometry;
 
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
@@ -48,8 +50,11 @@ import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.RandomState;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
+import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructureSet;
+import net.minecraft.world.level.levelgen.structure.StructureStart;
 import net.minecraft.world.level.levelgen.structure.structures.JigsawStructure;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 //?}
@@ -76,6 +81,12 @@ import net.minecraft.world.level.levelgen.feature.StructureFeature;
 import net.minecraft.world.level.levelgen.feature.configurations.StructureFeatureConfiguration;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureManager;
 import net.minecraft.world.level.storage.LevelStorageSource;
+import net.minecraft.world.level.levelgen.structure.BeardedStructureStart;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
+import net.minecraft.world.level.levelgen.structure.StructurePiece;
+import net.minecraft.world.level.levelgen.structure.StructureStart;
+import com.scrimchic.seedchecker.worldgen.StructureBounds;
+import com.scrimchic.seedchecker.worldgen.StructureGeometry;
 import org.junit.jupiter.api.AfterAll;*/
 //?}
 
@@ -775,6 +786,140 @@ class StructureBiomeValidatorTest {
         }
     }
 
+    // ------------------------------------------- Phase 3F: exact structure geometry
+
+    @Test
+    void jigsawGeometryIsVanillasOwnStructureStart() throws Exception {
+        // The oracle is vanilla's StructureStart, built by Structure.generate in a context this test
+        // owns: its bounding box must be exactly our bounds put through vanilla's own
+        // adjustBoundingBox, every piece it generated must lie inside our bounds, and each of our six
+        // faces must be reached by one of its pieces - so the bounds are neither short nor loose.
+        int compared = 0;
+        for (long seed : JIGSAW_SEEDS) {
+            BiomeWorldgenSession seedSession =
+                    BiomeWorldgenSession.create(seed, BiomeWorldgenSession.OVERWORLD);
+            LoadedWorld world = new LoadedWorld(seed);
+
+            for (StructureType type : placements.types()) {
+                if (!isJigsawType(type)) {
+                    continue;
+                }
+                // A village's pieces take a second or more to assemble, and this assembles each
+                // structure twice.
+                int wanted = type == StructureType.VILLAGE ? 1 : 2;
+                int found = 0;
+                for (int[] candidate : candidates(placements.get(type), 600, seed)) {
+                    if (found >= wanted) {
+                        break;
+                    }
+                    StructureValidation validation = StructureBiomeValidator
+                            .validate(seedSession, type, candidate[0], candidate[1]);
+                    if (!validation.isCompatible()) {
+                        continue;
+                    }
+                    String where = type + " seed " + seed + " chunk "
+                            + candidate[0] + "," + candidate[1];
+
+                    StructureGeometry ours = StructureGeometryGenerator.generate(seedSession, type,
+                            validation.variant(), candidate[0], candidate[1]);
+                    assertNotNull(ours, where);
+                    assertTrue(ours.isAvailable(), where + ": " + ours);
+                    assertEquals(validation.generationPoint(), ours.generationPoint(),
+                            where + ": geometry was assembled from a different start");
+
+                    StructureStart start = world.start(validation.variant(), candidate[0],
+                            candidate[1], predicateFor(type, validation.variant()));
+                    assertTrue(start.isValid(), where);
+
+                    StructureBounds bounds = ours.bounds();
+                    BoundingBox adjusted = world.structure(validation.variant()).value()
+                            .adjustBoundingBox(new BoundingBox(bounds.minX(), bounds.minY(),
+                                    bounds.minZ(), bounds.maxX(), bounds.maxY(), bounds.maxZ()));
+                    assertSameBox(start.getBoundingBox(), adjusted, where + " StructureStart box");
+                    assertPiecesSpan(bounds, start.getPieces(), where);
+                    found++;
+                    compared++;
+                }
+                assertEquals(wanted, found, type + " seed " + seed + ": too few structures found");
+            }
+        }
+        System.out.println("geometry oracle: " + compared + " jigsaw structures");
+    }
+
+    @Test
+    void thePyramidsStartHeightIsAPlaceholderSoItClaimsNoBounds() throws Exception {
+        // Why the desert pyramid has no bounds: vanilla builds its piece at y 64 whatever the
+        // terrain, and moves it only while placing it into generated chunks. The shipwreck here is
+        // not exact at all.
+        LoadedWorld world = new LoadedWorld(SEED);
+        int pyramids = 0;
+        boolean placeholderDiffersFromTerrain = false;
+        for (int[] candidate : candidates(placements.get(StructureType.DESERT_PYRAMID), 3000)) {
+            if (pyramids >= 3) {
+                break;
+            }
+            StructureValidation validation = StructureBiomeValidator
+                    .validate(session, StructureType.DESERT_PYRAMID, candidate[0], candidate[1]);
+            if (!validation.isCompatible()) {
+                continue;
+            }
+            StructureGeometry geometry = StructureGeometryGenerator.generate(session,
+                    StructureType.DESERT_PYRAMID, validation.variant(), candidate[0], candidate[1]);
+            assertFalse(geometry.isAvailable());
+            assertNotNull(geometry.unavailableReason());
+
+            StructureStart start = world.start(validation.variant(), candidate[0], candidate[1],
+                    predicateFor(StructureType.DESERT_PYRAMID, validation.variant()));
+            assertEquals(64, start.getBoundingBox().minY(), "vanilla's start-time pyramid height");
+            if (validation.generationPoint().y() != 64) {
+                placeholderDiffersFromTerrain = true;
+            }
+            pyramids++;
+        }
+        assertTrue(pyramids > 0, "no desert pyramid found");
+        assertTrue(placeholderDiffersFromTerrain,
+                "every pyramid happened to stand at y 64, so nothing was shown");
+
+        for (int[] candidate : candidates(placements.get(StructureType.SHIPWRECK), 60)) {
+            StructureValidation validation = StructureBiomeValidator
+                    .validate(session, StructureType.SHIPWRECK, candidate[0], candidate[1]);
+            if (validation.isCompatible()) {
+                assertFalse(StructureGeometryGenerator.generate(session, StructureType.SHIPWRECK,
+                        validation.variant(), candidate[0], candidate[1]).isAvailable());
+                return;
+            }
+        }
+        throw new AssertionError("no compatible shipwreck found");
+    }
+
+    private static void assertSameBox(BoundingBox expected, BoundingBox actual, String what) {
+        assertEquals(expected.minX() + "," + expected.minY() + "," + expected.minZ() + " .. "
+                        + expected.maxX() + "," + expected.maxY() + "," + expected.maxZ(),
+                actual.minX() + "," + actual.minY() + "," + actual.minZ() + " .. "
+                        + actual.maxX() + "," + actual.maxY() + "," + actual.maxZ(), what);
+    }
+
+    private static void assertPiecesSpan(StructureBounds bounds, List<StructurePiece> pieces,
+                                         String where) {
+        assertFalse(pieces.isEmpty(), where + ": vanilla generated no pieces");
+        boolean[] touched = new boolean[6];
+        for (StructurePiece piece : pieces) {
+            BoundingBox box = piece.getBoundingBox();
+            assertTrue(bounds.contains(box.minX(), box.minY(), box.minZ())
+                            && bounds.contains(box.maxX(), box.maxY(), box.maxZ()),
+                    where + ": a piece lies outside the bounds: " + box);
+            touched[0] |= box.minX() == bounds.minX();
+            touched[1] |= box.minY() == bounds.minY();
+            touched[2] |= box.minZ() == bounds.minZ();
+            touched[3] |= box.maxX() == bounds.maxX();
+            touched[4] |= box.maxY() == bounds.maxY();
+            touched[5] |= box.maxZ() == bounds.maxZ();
+        }
+        for (int face = 0; face < 6; face++) {
+            assertTrue(touched[face], where + ": no piece reaches face " + face + " of " + bounds);
+        }
+    }
+
     private static boolean isJigsawType(StructureType type) {
         return type == StructureType.VILLAGE || type == StructureType.ANCIENT_CITY
                 || type == StructureType.TRIAL_CHAMBER;
@@ -862,15 +1007,21 @@ class StructureBiomeValidatorTest {
 
         /** Vanilla's full Structure.generate, pieces and all. */
         boolean generates(String variant, int chunkX, int chunkZ, Predicate<Holder<Biome>> biomes) {
+            return start(variant, chunkX, chunkZ, biomes).isValid();
+        }
+
+        /** The StructureStart vanilla's Structure.generate builds - the geometry oracle. */
+        StructureStart start(String variant, int chunkX, int chunkZ,
+                             Predicate<Holder<Biome>> biomes) {
             Holder<Structure> holder = structure(variant);
             //? if >=26.1 {
             return holder.value().generate(holder, Level.OVERWORLD, data.registries(),
                     chunkGenerator, biomeSource, randomState, templates, seed,
-                    new ChunkPos(chunkX, chunkZ), 0, heightAccessor, biomes).isValid();
+                    new ChunkPos(chunkX, chunkZ), 0, heightAccessor, biomes);
             //?} else {
             /*return holder.value().generate(data.registries(), chunkGenerator, biomeSource,
                     randomState, templates, seed, new ChunkPos(chunkX, chunkZ), 0, heightAccessor,
-                    biomes).isValid();*/
+                    biomes);*/
             //?}
         }
 
@@ -1023,6 +1174,13 @@ class StructureBiomeValidatorTest {
      * walk that biome's configured structures, and run the one being asked about.
      ^/
     private static boolean vanillaStarts(StructureFeature<?> feature, int chunkX, int chunkZ) {
+        StructureStart<?> start = vanillaStart(feature, chunkX, chunkZ);
+        return start != null && start.isValid();
+    }
+
+    /^* The start vanilla builds there, or null when the biome does not list the feature at all. ^/
+    private static StructureStart<?> vanillaStart(StructureFeature<?> feature, int chunkX,
+                                                  int chunkZ) {
         Biome biome = oracleBiomeSource().getNoiseBiome(
                 (chunkX << 2) + 2, 0, (chunkZ << 2) + 2);
 
@@ -1036,10 +1194,96 @@ class StructureBiomeValidatorTest {
             assertNotNull(placement, "no default placement for " + feature);
             return configured.generate(RegistryAccess.builtin(), oracleChunkGenerator(),
                     oracleBiomeSource(), oracleTemplates(), SEED,
-                    new ChunkPos(chunkX, chunkZ), biome, 0, placement).isValid();
+                    new ChunkPos(chunkX, chunkZ), biome, 0, placement);
         }
         // Not in this biome's list at all, which is vanilla rejecting it on biome grounds.
-        return false;
+        return null;
+    }
+
+    // ------------------------------------------- Phase 3F: exact structure geometry
+
+    @Test
+    void villageGeometryIsVanillasOwnStructureStart() {
+        // Production builds its own start on the session's biome source and its own template
+        // manager; the oracle is the start built here, independently, by the same vanilla call
+        // ChunkGenerator.createStructures makes.
+        int compared = 0;
+        for (int[] candidate : candidates(placements.get(StructureType.VILLAGE), 400)) {
+            if (compared >= 3) {
+                break;
+            }
+            if (!StructureBiomeValidator.validate(session, StructureType.VILLAGE, candidate[0],
+                    candidate[1]).isCompatible()) {
+                continue;
+            }
+            String where = "village at chunk " + candidate[0] + "," + candidate[1];
+            StructureGeometry ours = StructureGeometryGenerator.generate(session,
+                    StructureType.VILLAGE, null, candidate[0], candidate[1]);
+            assertTrue(ours.isAvailable(), where + ": " + ours);
+
+            StructureStart<?> start = vanillaStart(StructureFeature.VILLAGE, candidate[0],
+                    candidate[1]);
+            assertNotNull(start, where);
+            assertTrue(start.isValid(), where);
+            // The village start is a BeardedStructureStart, whose own box is the pieces' extent
+            // inflated by 12 for the terrain beard; the bounds are the pieces' extent.
+            assertTrue(start instanceof BeardedStructureStart, where + ": expected a bearded start");
+            BoundingBox box = start.getBoundingBox();
+            StructureBounds bounds = ours.bounds();
+            assertEquals(box.x0 + "," + box.y0 + "," + box.z0 + " .. " + box.x1 + "," + box.y1
+                            + "," + box.z1,
+                    (bounds.minX() - 12) + "," + (bounds.minY() - 12) + "," + (bounds.minZ() - 12)
+                            + " .. " + (bounds.maxX() + 12) + "," + (bounds.maxY() + 12) + ","
+                            + (bounds.maxZ() + 12), where);
+
+            boolean[] touched = new boolean[6];
+            for (StructurePiece piece : start.getPieces()) {
+                BoundingBox pieceBox = piece.getBoundingBox();
+                assertTrue(bounds.contains(pieceBox.x0, pieceBox.y0, pieceBox.z0)
+                        && bounds.contains(pieceBox.x1, pieceBox.y1, pieceBox.z1),
+                        where + ": a piece lies outside the bounds");
+                touched[0] |= pieceBox.x0 == bounds.minX();
+                touched[1] |= pieceBox.y0 == bounds.minY();
+                touched[2] |= pieceBox.z0 == bounds.minZ();
+                touched[3] |= pieceBox.x1 == bounds.maxX();
+                touched[4] |= pieceBox.y1 == bounds.maxY();
+                touched[5] |= pieceBox.z1 == bounds.maxZ();
+            }
+            for (int face = 0; face < 6; face++) {
+                assertTrue(touched[face], where + ": no piece reaches face " + face);
+            }
+            compared++;
+        }
+        assertEquals(3, compared, "too few villages found");
+    }
+
+    @Test
+    void structuresPlacedAtAPlaceholderHeightClaimNoBounds() {
+        // Vanilla builds these at y 64 and y 90 and only moves them to the terrain while placing
+        // them into generated chunks, so no bounds are claimed for either.
+        int[] placeholders = {64, 90};
+        StructureType[] types = {StructureType.DESERT_PYRAMID, StructureType.SHIPWRECK};
+        for (int i = 0; i < types.length; i++) {
+            StructureType type = types[i];
+            int checked = 0;
+            for (int[] candidate : candidates(placements.get(type), 2000)) {
+                if (checked >= 2) {
+                    break;
+                }
+                if (!StructureBiomeValidator.validate(session, type, candidate[0], candidate[1])
+                        .isCompatible()) {
+                    continue;
+                }
+                assertFalse(StructureGeometryGenerator.generate(session, type, null, candidate[0],
+                        candidate[1]).isAvailable(), type + " must not claim bounds");
+                StructureStart<?> start = vanillaStart(vanillaFeature(type), candidate[0],
+                        candidate[1]);
+                assertEquals(placeholders[i], start.getBoundingBox().y0,
+                        type + " start-time height is vanilla's placeholder");
+                checked++;
+            }
+            assertEquals(2, checked, "too few " + type + " found");
+        }
     }
 
     // The oracle's own worldgen, built once and independent of the session under test.

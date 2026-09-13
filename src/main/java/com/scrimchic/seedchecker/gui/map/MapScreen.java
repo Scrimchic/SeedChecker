@@ -3,6 +3,7 @@ package com.scrimchic.seedchecker.gui.map;
 import java.util.List;
 
 import com.scrimchic.seedchecker.client.biome.BiomeTileManager;
+import com.scrimchic.seedchecker.client.structure.StructureGeometryManager;
 import com.scrimchic.seedchecker.client.structure.StructureValidationManager;
 import com.scrimchic.seedchecker.client.world.WorldProfileManager;
 import com.scrimchic.seedchecker.core.map.ChunkRange;
@@ -21,8 +22,12 @@ import com.scrimchic.seedchecker.world.SeedParser;
 import com.scrimchic.seedchecker.world.WorldContext;
 import com.scrimchic.seedchecker.world.WorldProfile;
 import com.scrimchic.seedchecker.worldgen.GenerationPoint;
+import com.scrimchic.seedchecker.worldgen.StructureBounds;
+import com.scrimchic.seedchecker.worldgen.StructureGeometry;
 import com.scrimchic.seedchecker.worldgen.StructureValidation;
+import com.scrimchic.seedchecker.worldgen.StructureValidationKey;
 import com.scrimchic.seedchecker.worldgen.StructureValidationStore;
+import com.scrimchic.seedchecker.worldgen.biome.BiomeMapKey;
 import com.scrimchic.seedchecker.worldgen.biome.BiomeTileStore;
 
 import net.minecraft.client.gui.screens.Screen;
@@ -66,6 +71,9 @@ public final class MapScreen extends Screen {
     /** Near-black outline plus a white core, so the marker reads over any biome colour. */
     private static final int COLOR_PLAYER = 0xFFFFFFFF;
     private static final int COLOR_PLAYER_OUTLINE = 0xFF0B0E11;
+
+    /** A selected structure's bounds: thin and translucent, so biomes and markers still read. */
+    private static final int COLOR_BOUNDS = 0xC0FFD479;
 
     /** Every eighth grid line is drawn brighter. */
     private static final int MAJOR_GRID_MULTIPLE = 8;
@@ -129,6 +137,9 @@ public final class MapScreen extends Screen {
     private StructureLayer selectedLayer;
     private int selectedChunkX;
     private int selectedChunkZ;
+
+    /** The map the selection was made on; a different map means the selection is gone. */
+    private BiomeMapKey selectedMap;
 
     /** One line of feedback for the last selection action, e.g. that a copy happened. */
     private String selectionNotice;
@@ -209,9 +220,20 @@ public final class MapScreen extends Screen {
 
         ChunkRange visible = ChunkRange.visibleIn(viewport);
 
+        // A selection belongs to one map. Changing or clearing the seed, or switching world or
+        // dimension, drops it, and the geometry store drops what it had for the old map.
+        BiomeMapKey structureMap = world.hasSeed() ? StructureValidationKey.mapKeyFor(world) : null;
+        if (selectedLayer != null && (structureMap == null || !structureMap.equals(selectedMap))) {
+            clearSelection();
+        }
+        if (structureMap != null) {
+            StructureGeometryManager.get().useMap(structureMap);
+        }
+
         canvas.fill(0, 0, this.width, this.height, COLOR_BACKGROUND);
         drawGrid(canvas);
         LAYERS.renderAll(canvas, viewport, visible, world);
+        drawSelectedBounds(canvas, world);
 
         // After every layer, so the player is never hidden behind a structure marker.
         if (player != null) {
@@ -273,13 +295,16 @@ public final class MapScreen extends Screen {
         panel.blank();
         panel.line("Candidate chunk  " + selectedChunkX + ", " + selectedChunkZ, COLOR_TEXT_DIM);
         if (point != null) {
-            panel.line("Exact generation position", COLOR_TEXT);
+            // The stub position vanilla assembles from - not the middle of the structure, which
+            // for a jigsaw can be a long way off. The bounds below carry their own centre.
+            panel.line("Generation position (exact)", COLOR_TEXT);
             panel.line("X " + point.x() + "   Y " + point.y() + "   Z " + point.z(), COLOR_TEXT);
             panel.line("teleport keeps your own Y", COLOR_TEXT_DIM);
         } else {
             panel.line("Candidate anchor " + anchorX + ", " + anchorZ, COLOR_TEXT);
             panel.line("the candidate chunk centre, not a structure position", COLOR_TEXT_DIM);
         }
+        appendBoundsRows(panel, result);
 
         panel.blank();
         panel.action(ACTION_SELECTION_CENTER, "[Center]", COLOR_TEXT);
@@ -294,6 +319,99 @@ public final class MapScreen extends Screen {
             panel.line(selectionNotice, COLOR_TEXT_DIM);
         }
         return panel;
+    }
+
+    private void clearSelection() {
+        selectedLayer = null;
+        selectedMap = null;
+        selectionPanel = null;
+        selectionNotice = null;
+    }
+
+    /**
+     * The selected structure's geometry, asked for if it is not known yet.
+     *
+     * <p>Only for an exactly validated structure that generates: nothing else has geometry worth
+     * assembling, and a non-exact one must not be given bounds it does not have.
+     *
+     * @return the geometry, or {@code null} while it is being assembled or when there is none
+     */
+    private StructureGeometry selectedGeometry(StructureValidation result) {
+        if (selectedLayer == null || selectedMap == null || result == null || !result.isExact()
+                || !result.isCompatible()) {
+            return null;
+        }
+        StructureValidationKey key = new StructureValidationKey(selectedMap, selectedLayer.type(),
+                selectedChunkX, selectedChunkZ);
+        StructureGeometryManager geometry = StructureGeometryManager.get();
+        StructureGeometry known = geometry.resultIfReady(key);
+        if (known == null) {
+            // Deduplicated by the store, so asking every frame until it arrives queues one job.
+            geometry.request(key, result.variant());
+        }
+        return known;
+    }
+
+    private void appendBoundsRows(TextPanel panel, StructureValidation result) {
+        panel.blank();
+        if (result == null || !result.isCompatible()) {
+            panel.line("Bounds    unavailable", COLOR_TEXT_DIM);
+            return;
+        }
+        if (!result.isExact()) {
+            panel.line("Bounds    not computed for a non-exact structure", COLOR_TEXT_DIM);
+            return;
+        }
+        StructureGeometry geometry = selectedGeometry(result);
+        if (geometry == null) {
+            panel.line("Bounds    loading...", COLOR_TEXT_DIM);
+            return;
+        }
+        if (!geometry.isAvailable()) {
+            panel.line("Bounds    unavailable", COLOR_TEXT_DIM);
+            panel.line("          " + geometry.unavailableReason(), COLOR_TEXT_DIM);
+            return;
+        }
+        StructureBounds bounds = geometry.bounds();
+        panel.line("Bounds (all pieces)", COLOR_TEXT);
+        panel.line("X " + bounds.minX() + ".." + bounds.maxX(), COLOR_TEXT);
+        panel.line("Y " + bounds.minY() + ".." + bounds.maxY(), COLOR_TEXT);
+        panel.line("Z " + bounds.minZ() + ".." + bounds.maxZ(), COLOR_TEXT);
+        panel.line("Bounds center " + bounds.centerX() + ", " + bounds.centerY() + ", "
+                + bounds.centerZ(), COLOR_TEXT_DIM);
+    }
+
+    /** A thin outline of the selected structure's bounds, drawn only once they are known. */
+    private void drawSelectedBounds(MapCanvas canvas, ActiveWorld world) {
+        if (selectedLayer == null) {
+            return;
+        }
+        StructureGeometry geometry = selectedGeometry(
+                selectedLayer.resultAt(world, selectedChunkX, selectedChunkZ));
+        if (geometry == null || !geometry.isAvailable()) {
+            return;
+        }
+        StructureBounds bounds = geometry.bounds();
+        double left = viewport.blockToScreenX(bounds.minX());
+        double right = viewport.blockToScreenX(bounds.maxX() + 1.0);
+        double top = viewport.blockToScreenY(bounds.minZ());
+        double bottom = viewport.blockToScreenY(bounds.maxZ() + 1.0);
+        if (right < 0 || bottom < 0 || left > this.width || top > this.height) {
+            return;
+        }
+        int x0 = clampToScreen(left, this.width);
+        int y0 = clampToScreen(top, this.height);
+        int x1 = Math.max(x0 + 1, clampToScreen(right, this.width));
+        int y1 = Math.max(y0 + 1, clampToScreen(bottom, this.height));
+        canvas.fill(x0, y0, x1, y0 + 1, COLOR_BOUNDS);
+        canvas.fill(x0, y1 - 1, x1, y1, COLOR_BOUNDS);
+        canvas.fill(x0, y0, x0 + 1, y1, COLOR_BOUNDS);
+        canvas.fill(x1 - 1, y0, x1, y1, COLOR_BOUNDS);
+    }
+
+    /** Pins an off-screen edge just outside the screen, so a huge box cannot overflow an int. */
+    private static int clampToScreen(double coordinate, int size) {
+        return (int) Math.round(Math.max(-2.0, Math.min(size + 2.0, coordinate)));
     }
 
     private static String statusLabel(StructureValidation result) {
@@ -631,6 +749,7 @@ public final class MapScreen extends Screen {
         }
 
         selectedLayer = bestLayer;
+        selectedMap = bestLayer == null ? null : StructureValidationKey.mapKeyFor(world);
         selectedChunkX = bestChunkX;
         selectedChunkZ = bestChunkZ;
         selectionNotice = null;
@@ -656,8 +775,16 @@ public final class MapScreen extends Screen {
 
         if (action == ACTION_SELECTION_CENTER) {
             followPlayer = false;
-            viewport.setCenter(anchorX, anchorZ);
-            selectionNotice = null;
+            StructureGeometry geometry = selectedGeometry(result);
+            if (geometry != null && geometry.isAvailable()) {
+                StructureBounds bounds = geometry.bounds();
+                viewport.setCenter(bounds.centerX() + 0.5, bounds.centerZ() + 0.5);
+                selectionNotice = "centred on the bounds";
+            } else {
+                // Generation position when exact, candidate anchor otherwise.
+                viewport.setCenter(anchorX + 0.5, anchorZ + 0.5);
+                selectionNotice = null;
+            }
             return;
         }
         if (action == ACTION_SELECTION_TELEPORT) {
@@ -685,9 +812,7 @@ public final class MapScreen extends Screen {
             return;
         }
         if (action == ACTION_SELECTION_CLEAR) {
-            selectedLayer = null;
-            selectionPanel = null;
-            selectionNotice = null;
+            clearSelection();
         }
     }
 
