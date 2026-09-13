@@ -29,6 +29,15 @@ public final class StructureValidationStore {
 
     private final BoundedLruCache<StructureValidationKey, StructureValidation> cache;
     private final Set<StructureValidationKey> pending = new HashSet<StructureValidationKey>();
+
+    /**
+     * Structure types whose check found the data it needs still loading.
+     *
+     * <p>Held back from {@link #claim} until {@link #resumeWaiting}, so that nearly a second of
+     * loading does not turn into a queue full of jobs that each immediately give up.
+     */
+    private final Set<StructureType> waitingTypes = new HashSet<StructureType>();
+
     private final int maxPending;
 
     private int generation;
@@ -40,6 +49,7 @@ public final class StructureValidationStore {
     private int undecided;
     private int failed;
     private int discarded;
+    private int deferred;
 
     public StructureValidationStore(int maxCachedResults, int maxPending) {
         if (maxPending <= 0) {
@@ -62,6 +72,7 @@ public final class StructureValidationStore {
         generation++;
         cache.clear();
         pending.clear();
+        waitingTypes.clear();
         return true;
     }
 
@@ -77,7 +88,8 @@ public final class StructureValidationStore {
      *         already queued, or the queue is full
      */
     public synchronized int claim(StructureValidationKey key) {
-        if (cache.containsKey(key) || pending.contains(key) || pending.size() >= maxPending) {
+        if (cache.containsKey(key) || pending.contains(key) || pending.size() >= maxPending
+                || waitingTypes.contains(key.type())) {
             return NO_JOB;
         }
         pending.add(key);
@@ -120,11 +132,36 @@ public final class StructureValidationStore {
         failed++;
     }
 
+    /**
+     * Records that a job gave up because the data its check needs is still loading. Nothing is
+     * filed, and the type is held back from {@link #claim} until {@link #resumeWaiting}.
+     *
+     * @return whether the job still belonged to the current map
+     */
+    public synchronized boolean markWaiting(StructureType type, int jobGeneration) {
+        if (jobGeneration != generation) {
+            return false;
+        }
+        deferred++;
+        waitingTypes.add(type);
+        return true;
+    }
+
+    /** @return whether candidates of this type are being held back until data finishes loading. */
+    public synchronized boolean isWaiting(StructureType type) {
+        return waitingTypes.contains(type);
+    }
+
+    /** Lets every held-back type be claimed again. */
+    public synchronized void resumeWaiting() {
+        waitingTypes.clear();
+    }
+
     public synchronized Metrics metrics() {
         int answered = accepted + rejected + undecided;
         double average = answered == 0 ? 0.0 : totalNanos / 1e6 / answered;
         return new Metrics(cache.size(), pending.size(), accepted, rejected, undecided, failed,
-                discarded, average);
+                discarded, deferred, waitingTypes.size(), average);
     }
 
     /** A snapshot for the prototype debug panel. */
@@ -137,10 +174,12 @@ public final class StructureValidationStore {
         private final int undecided;
         private final int failed;
         private final int discarded;
+        private final int deferred;
+        private final int waitingTypes;
         private final double averageMillis;
 
         Metrics(int cachedResults, int pendingResults, int accepted, int rejected, int undecided,
-                int failed, int discarded, double averageMillis) {
+                int failed, int discarded, int deferred, int waitingTypes, double averageMillis) {
             this.cachedResults = cachedResults;
             this.pendingResults = pendingResults;
             this.accepted = accepted;
@@ -148,6 +187,8 @@ public final class StructureValidationStore {
             this.undecided = undecided;
             this.failed = failed;
             this.discarded = discarded;
+            this.deferred = deferred;
+            this.waitingTypes = waitingTypes;
             this.averageMillis = averageMillis;
         }
 
@@ -179,6 +220,16 @@ public final class StructureValidationStore {
         /** Decisions that finished after the world changed and were thrown away. */
         public int discarded() {
             return discarded;
+        }
+
+        /** Jobs that found the data their check needs still loading, and gave up to retry later. */
+        public int deferred() {
+            return deferred;
+        }
+
+        /** Structure types currently held back until that data has loaded. */
+        public int waitingTypes() {
+            return waitingTypes;
         }
 
         public double averageMillis() {

@@ -12,12 +12,16 @@ import com.scrimchic.seedchecker.gui.map.layer.MapLayer;
 import com.scrimchic.seedchecker.gui.map.layer.MapLayers;
 import com.scrimchic.seedchecker.gui.map.layer.StructureLayer;
 import com.scrimchic.seedchecker.platform.MinecraftBridge;
+import com.scrimchic.seedchecker.platform.PlayerNavigator;
+import com.scrimchic.seedchecker.platform.VanillaStructureData;
 import com.scrimchic.seedchecker.world.ActiveWorld;
 import com.scrimchic.seedchecker.world.DimensionType;
 import com.scrimchic.seedchecker.world.PlayerPosition;
 import com.scrimchic.seedchecker.world.SeedParser;
 import com.scrimchic.seedchecker.world.WorldContext;
 import com.scrimchic.seedchecker.world.WorldProfile;
+import com.scrimchic.seedchecker.worldgen.GenerationPoint;
+import com.scrimchic.seedchecker.worldgen.StructureValidation;
 import com.scrimchic.seedchecker.worldgen.StructureValidationStore;
 import com.scrimchic.seedchecker.worldgen.biome.BiomeTileStore;
 
@@ -79,6 +83,19 @@ public final class MapScreen extends Screen {
     private static final int ACTION_CENTER_PLAYER = 3;
     private static final int ACTION_FOLLOW_PLAYER = 4;
     private static final int ACTION_RAW_CANDIDATES = 5;
+    private static final int ACTION_SELECTION_CENTER = 6;
+    private static final int ACTION_SELECTION_TELEPORT = 7;
+    private static final int ACTION_SELECTION_COPY_COORDS = 8;
+    private static final int ACTION_SELECTION_COPY_COMMAND = 9;
+    private static final int ACTION_SELECTION_CLEAR = 10;
+
+    /**
+     * How far a click may miss a marker and still hit it, in chunks.
+     *
+     * <p>Zoomed out, a marker is drawn at a fixed pixel size that covers several chunks, so the
+     * chunk directly under the cursor is often not the one the developer was aiming at.
+     */
+    private static final int MAX_SELECT_CHUNK_RADIUS = 4;
 
     /** Layer toggles occupy the action ids from here upwards, one per layer. */
     private static final int ACTION_LAYER_BASE = 100;
@@ -99,8 +116,22 @@ public final class MapScreen extends Screen {
 
     private boolean dragging;
 
-    /** The panel as it was last drawn, kept so a click can be matched against its rows. */
+    /** The panels as they were last drawn, kept so a click can be matched against their rows. */
     private TextPanel contextPanel;
+    private TextPanel selectionPanel;
+
+    /**
+     * The structure candidate the developer clicked, if any.
+     *
+     * <p>Per screen rather than per session: it is a look-at-this-one tool, and reopening the map
+     * with a stale selection would be more confusing than helpful.
+     */
+    private StructureLayer selectedLayer;
+    private int selectedChunkX;
+    private int selectedChunkZ;
+
+    /** One line of feedback for the last selection action, e.g. that a copy happened. */
+    private String selectionNotice;
 
     private boolean followPlayer;
 
@@ -193,6 +224,92 @@ public final class MapScreen extends Screen {
         TextPanel debugPanel = buildDebugPanel(mouseX, mouseY);
         debugPanel.draw(canvas, PANEL_MARGIN,
                 this.height - PANEL_MARGIN - debugPanel.height(canvas), mouseX, mouseY);
+
+        if (selectedLayer == null) {
+            selectionPanel = null;
+        } else {
+            selectionPanel = buildSelectionPanel(world);
+            selectionPanel.draw(canvas,
+                    this.width - PANEL_MARGIN - selectionPanel.width(canvas), PANEL_MARGIN,
+                    mouseX, mouseY);
+        }
+    }
+
+    /**
+     * What the selected candidate is, and what can be done with it.
+     *
+     * <p>Deliberately says <em>candidate anchor</em> rather than anything resembling a structure
+     * position. For everything except an exactly validated structure the anchor is only the middle
+     * of the chunk grid placement picked; vanilla's real generation point can be tens of blocks
+     * away, and for a jigsaw structure it is not computed at all yet.
+     */
+    private TextPanel buildSelectionPanel(ActiveWorld world) {
+        StructureLayer layer = selectedLayer;
+        int anchorX = (selectedChunkX << 4) + 8;
+        int anchorZ = (selectedChunkZ << 4) + 8;
+
+        TextPanel panel = new TextPanel(COLOR_PANEL, COLOR_TEXT_HOVER);
+        panel.line("SELECTED", COLOR_SECTION);
+        panel.line(layer.displayName(), COLOR_TEXT);
+
+        StructureValidation result = layer.resultAt(world, selectedChunkX, selectedChunkZ);
+        GenerationPoint point = result == null ? null : result.generationPoint();
+        panel.blank();
+        panel.line("Status    " + statusLabel(result), COLOR_TEXT);
+        if (result == null && StructureValidationManager.get()
+                .isWaitingForStructureData(layer.type())) {
+            panel.line("          loading vanilla structure data", COLOR_TEXT_DIM);
+        }
+        if (result != null && result.reason() != null) {
+            panel.line("          " + result.reason(), COLOR_TEXT_DIM);
+        }
+        if (result != null && result.sampledBiomeId() != null) {
+            panel.line("Biome     " + result.sampledBiomeId(), COLOR_TEXT_DIM);
+        }
+        if (result != null && result.variant() != null) {
+            panel.line("Variant   " + result.variant(), COLOR_TEXT_DIM);
+        }
+
+        panel.blank();
+        panel.line("Candidate chunk  " + selectedChunkX + ", " + selectedChunkZ, COLOR_TEXT_DIM);
+        if (point != null) {
+            panel.line("Exact generation position", COLOR_TEXT);
+            panel.line("X " + point.x() + "   Y " + point.y() + "   Z " + point.z(), COLOR_TEXT);
+            panel.line("teleport keeps your own Y", COLOR_TEXT_DIM);
+        } else {
+            panel.line("Candidate anchor " + anchorX + ", " + anchorZ, COLOR_TEXT);
+            panel.line("the candidate chunk centre, not a structure position", COLOR_TEXT_DIM);
+        }
+
+        panel.blank();
+        panel.action(ACTION_SELECTION_CENTER, "[Center]", COLOR_TEXT);
+        boolean canTeleport = PlayerNavigator.canTeleport();
+        panel.action(ACTION_SELECTION_TELEPORT,
+                canTeleport ? "[Teleport]" : "[Teleport] needs command permission",
+                canTeleport ? COLOR_TEXT : COLOR_TEXT_DIM);
+        panel.action(ACTION_SELECTION_COPY_COORDS, "[Copy coords]", COLOR_TEXT);
+        panel.action(ACTION_SELECTION_COPY_COMMAND, "[Copy /tp]", COLOR_TEXT);
+        panel.action(ACTION_SELECTION_CLEAR, "[Close]", COLOR_TEXT_DIM);
+        if (selectionNotice != null) {
+            panel.line(selectionNotice, COLOR_TEXT_DIM);
+        }
+        return panel;
+    }
+
+    private static String statusLabel(StructureValidation result) {
+        if (result == null) {
+            return "checking";
+        }
+        if (result.isRejected()) {
+            return "INCOMPATIBLE";
+        }
+        if (!result.isCompatible()) {
+            return "UNKNOWN";
+        }
+        // The distinction the exact paths bought: whether this is "vanilla generates one here" or
+        // "vanilla might". Read off the result, because asking the validator would load the
+        // version's structure data on the render thread.
+        return result.isExact() ? "COMPATIBLE (exact)" : "COMPATIBLE (non-exact)";
     }
 
     /**
@@ -279,8 +396,8 @@ public final class MapScreen extends Screen {
 
         panel.blank();
         panel.line("LAYERS (click to toggle)", COLOR_SECTION);
-        // Says it out loud: grid placement picked these chunks, vanilla has not approved them.
-        panel.line("structures are biome-checked candidates", COLOR_TEXT_DIM);
+        // Says it out loud: exact structures are vanilla's answer, the rest are still candidates.
+        panel.line("exact where vanilla is reproduced, else candidates", COLOR_TEXT_DIM);
         panel.action(ACTION_RAW_CANDIDATES,
                 "Raw candidates: " + (StructureLayer.showRawCandidates() ? "ON" : "OFF"),
                 StructureLayer.showRawCandidates() ? COLOR_TEXT : COLOR_TEXT_DIM);
@@ -368,6 +485,15 @@ public final class MapScreen extends Screen {
                 + (checks.failed() > 0 ? ", " + checks.failed() + " failed" : ""),
                 COLOR_TEXT_DIM);
         panel.line("Check ms " + String.format("%.1f avg", checks.averageMillis()), COLOR_TEXT_DIM);
+        long dataMillis = VanillaStructureData.loadMillis();
+        if (VanillaStructureData.isLoading() || dataMillis >= 0 || checks.deferred() > 0) {
+            panel.line("Struct data " + (VanillaStructureData.isLoading() ? "loading"
+                    : dataMillis >= 0 ? "loaded in " + dataMillis + " ms" : "not loaded")
+                    + (checks.waitingTypes() > 0 ? ", " + checks.waitingTypes() + " types waiting"
+                            : "")
+                    + (checks.deferred() > 0 ? ", " + checks.deferred() + " deferred" : ""),
+                    COLOR_TEXT_DIM);
+        }
 
         appendCursorStructures(panel, (int) (blockX >> 4), (int) (blockZ >> 4));
         return panel;
@@ -428,23 +554,160 @@ public final class MapScreen extends Screen {
 
     // ------------------------------------------------------------ interaction
 
-    /** Left click either triggers a panel action or starts panning the map. */
+    /** Left click triggers a panel action, selects a structure marker, or starts panning. */
     private boolean onPress(double mouseX, double mouseY, int button) {
         if (button != 0) {
             return false;
         }
-        int action = contextPanel == null
-                ? TextPanel.NO_ACTION
-                : contextPanel.actionAt(mouseX, mouseY);
+        int action = panelActionAt(mouseX, mouseY);
         if (action != TextPanel.NO_ACTION) {
             runAction(action);
             return true;
         }
+        // Selecting and panning share the press: a drag only becomes one once the mouse moves, so
+        // picking a marker never costs the ability to pan away from it.
+        selectStructureAt(mouseX, mouseY);
         dragging = true;
         return true;
     }
 
+    private int panelActionAt(double mouseX, double mouseY) {
+        if (selectionPanel != null) {
+            int action = selectionPanel.actionAt(mouseX, mouseY);
+            if (action != TextPanel.NO_ACTION) {
+                return action;
+            }
+        }
+        return contextPanel == null ? TextPanel.NO_ACTION : contextPanel.actionAt(mouseX, mouseY);
+    }
+
+    /**
+     * Picks the drawn structure marker nearest the click, or clears the selection when there is
+     * none.
+     *
+     * <p>Searches a few chunks around the cursor rather than only the chunk under it, because a
+     * marker has a minimum on-screen size and covers several chunks once zoomed out. Every
+     * candidate test is pure seed arithmetic, so even the widest search here is a few hundred
+     * multiplications on a single click.
+     */
+    private void selectStructureAt(double mouseX, double mouseY) {
+        ActiveWorld world = WorldProfileManager.get().currentWorld();
+        double blockX = viewport.screenToBlockX(mouseX);
+        double blockZ = viewport.screenToBlockZ(mouseY);
+        int centreChunkX = (int) Math.floor(blockX) >> 4;
+        int centreChunkZ = (int) Math.floor(blockZ) >> 4;
+        int radius = selectChunkRadius();
+
+        StructureLayer bestLayer = null;
+        int bestChunkX = 0;
+        int bestChunkZ = 0;
+        double bestDistance = Double.MAX_VALUE;
+
+        List<MapLayer> layers = LAYERS.all();
+        for (int chunkZ = centreChunkZ - radius; chunkZ <= centreChunkZ + radius; chunkZ++) {
+            for (int chunkX = centreChunkX - radius; chunkX <= centreChunkX + radius; chunkX++) {
+                for (int i = 0; i < layers.size(); i++) {
+                    if (!(layers.get(i) instanceof StructureLayer)) {
+                        continue;
+                    }
+                    StructureLayer layer = (StructureLayer) layers.get(i);
+                    if (!layer.isMarkerAt(world, chunkX, chunkZ)) {
+                        continue;
+                    }
+                    // Measured to where the marker is drawn, which for an exact result is the
+                    // generation point rather than the chunk centre.
+                    StructureValidation result = layer.resultAt(world, chunkX, chunkZ);
+                    double dx = StructureLayer.markerBlockX(result, chunkX) + 0.5 - blockX;
+                    double dz = StructureLayer.markerBlockZ(result, chunkZ) + 0.5 - blockZ;
+                    double distance = dx * dx + dz * dz;
+                    if (distance < bestDistance) {
+                        bestLayer = layer;
+                        bestChunkX = chunkX;
+                        bestChunkZ = chunkZ;
+                        bestDistance = distance;
+                    }
+                }
+            }
+        }
+
+        selectedLayer = bestLayer;
+        selectedChunkX = bestChunkX;
+        selectedChunkZ = bestChunkZ;
+        selectionNotice = null;
+        if (bestLayer == null) {
+            selectionPanel = null;
+        }
+    }
+
+    /** How many chunks the drawn marker spans, so clicking anywhere on it selects it. */
+    private int selectChunkRadius() {
+        double markerBlocks = Math.max(ChunkRange.CHUNK_SIZE, MARKER_REACH / viewport.getScale());
+        int radius = (int) Math.ceil(markerBlocks / ChunkRange.CHUNK_SIZE);
+        return Math.min(MAX_SELECT_CHUNK_RADIUS, Math.max(1, radius));
+    }
+
+    private void runSelectionAction(int action) {
+        // Exact generation position when there is one, candidate chunk centre otherwise.
+        StructureValidation result = selectedLayer.resultAt(
+                WorldProfileManager.get().currentWorld(), selectedChunkX, selectedChunkZ);
+        GenerationPoint point = result == null ? null : result.generationPoint();
+        int anchorX = StructureLayer.markerBlockX(result, selectedChunkX);
+        int anchorZ = StructureLayer.markerBlockZ(result, selectedChunkZ);
+
+        if (action == ACTION_SELECTION_CENTER) {
+            followPlayer = false;
+            viewport.setCenter(anchorX, anchorZ);
+            selectionNotice = null;
+            return;
+        }
+        if (action == ACTION_SELECTION_TELEPORT) {
+            PlayerNavigator.TeleportResult outcome =
+                    PlayerNavigator.teleportToColumn(anchorX, anchorZ);
+            selectionNotice = teleportNotice(outcome);
+            if (outcome == PlayerNavigator.TeleportResult.SENT) {
+                // Nothing else to look at on the map while the game moves the player.
+                this.onClose();
+            }
+            return;
+        }
+        if (action == ACTION_SELECTION_COPY_COORDS) {
+            String coordinates = point != null
+                    ? point.x() + " " + point.y() + " " + point.z()
+                    : anchorX + " " + anchorZ;
+            PlayerNavigator.copyToClipboard(coordinates);
+            selectionNotice = "copied " + coordinates;
+            return;
+        }
+        if (action == ACTION_SELECTION_COPY_COMMAND) {
+            String command = PlayerNavigator.teleportCommand(anchorX, anchorZ);
+            PlayerNavigator.copyToClipboard(command);
+            selectionNotice = "copied " + command;
+            return;
+        }
+        if (action == ACTION_SELECTION_CLEAR) {
+            selectedLayer = null;
+            selectionPanel = null;
+            selectionNotice = null;
+        }
+    }
+
+    private static String teleportNotice(PlayerNavigator.TeleportResult result) {
+        if (result == PlayerNavigator.TeleportResult.NO_PERMISSION) {
+            return "no command permission here - copy the coordinates instead";
+        }
+        if (result == PlayerNavigator.TeleportResult.NO_PLAYER) {
+            return "no player to move";
+        }
+        return null;
+    }
+
     private void runAction(int action) {
+        if (action >= ACTION_SELECTION_CENTER && action <= ACTION_SELECTION_CLEAR) {
+            if (selectedLayer != null) {
+                runSelectionAction(action);
+            }
+            return;
+        }
         if (action == ACTION_EDIT_SEED) {
             beginSeedEdit();
             return;

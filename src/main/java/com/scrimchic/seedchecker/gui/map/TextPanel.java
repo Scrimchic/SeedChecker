@@ -57,23 +57,28 @@ public final class TextPanel {
         return rows.size() * lineHeight(canvas) + PADDING * 2;
     }
 
+    /** The width the panel will take, so a caller can right-align it before drawing. */
+    public int width(MapCanvas canvas) {
+        int textWidth = 0;
+        for (int i = 0; i < rows.size(); i++) {
+            textWidth = Math.max(textWidth, canvas.textWidth(rows.get(i).text));
+        }
+        return textWidth + PADDING * 2;
+    }
+
     /**
      * Draws the panel with its top-left corner at ({@code left}, {@code top}) and highlights
      * whichever clickable row the cursor is over.
      */
     public void draw(MapCanvas canvas, int left, int top, double mouseX, double mouseY) {
         int lineHeight = lineHeight(canvas);
-        int textWidth = 0;
-        for (int i = 0; i < rows.size(); i++) {
-            textWidth = Math.max(textWidth, canvas.textWidth(rows.get(i).text));
-        }
 
         // Recorded before anything is drawn so that hover highlighting below, and the click that
         // may follow, both read this frame's geometry.
         drawn = true;
         drawnLeft = left;
         drawnTop = top;
-        drawnRight = left + textWidth + PADDING * 2;
+        drawnRight = left + width(canvas);
         drawnLineHeight = lineHeight;
 
         canvas.fill(left, top, drawnRight, top + height(canvas), backgroundColor);

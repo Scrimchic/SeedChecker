@@ -5,6 +5,7 @@ import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.client.structure.StructureValidationManager;
 import com.scrimchic.seedchecker.gui.map.MapCanvas;
 import com.scrimchic.seedchecker.world.ActiveWorld;
+import com.scrimchic.seedchecker.worldgen.GenerationPoint;
 import com.scrimchic.seedchecker.worldgen.StructureCandidateVisitor;
 import com.scrimchic.seedchecker.worldgen.StructurePlacementConfig;
 import com.scrimchic.seedchecker.worldgen.StructurePlacementEngine;
@@ -16,11 +17,12 @@ import com.scrimchic.seedchecker.worldgen.biome.BiomeMapKey;
 /**
  * Marks the chunks one grid-placed structure could start in.
  *
- * <p>A candidate is hidden only when the biome check <em>proved</em> vanilla would reject it - a
- * desert pyramid in a jungle is gone from the map. A candidate the check could not decide is drawn
- * like any other, because this phase is allowed to show a structure that will not generate and is
- * not allowed to hide one that will. They are all still <em>candidates</em>, not structures:
- * vanilla also checks terrain height, jigsaw fit and exclusion zones, none of which happens yet.
+ * <p>A candidate is hidden only when the check <em>proved</em> vanilla would reject it - a desert
+ * pyramid in a jungle is gone from the map. A candidate the check could not decide is drawn like any
+ * other, because the map is allowed to show a structure that will not generate and is not allowed
+ * to hide one that will. Where the check reproduced vanilla exactly, the marker is drawn at the
+ * exact generation point rather than at the chunk centre; a non-exact one (the shipwreck) is still
+ * a candidate. Exclusion zones between structure sets are not modelled by either.
  *
  * <p>Validation is asynchronous, so a marker appears once its answer arrives rather than blocking
  * the frame. A candidate still waiting for its answer is invisible unless
@@ -156,14 +158,14 @@ public final class StructureLayer implements MapLayer {
                                 requests[0]++;
                             }
                             if (showRawCandidates) {
-                                draw(target, view, chunkX, chunkZ, half, PENDING_COLOR);
+                                draw(target, view, null, chunkX, chunkZ, half, PENDING_COLOR);
                             }
                             return true;
                         }
                         if (!result.isRejected()) {
-                            draw(target, view, chunkX, chunkZ, half, color);
+                            draw(target, view, result, chunkX, chunkZ, half, color);
                         } else if (showRawCandidates) {
-                            draw(target, view, chunkX, chunkZ, half, REJECTED_COLOR);
+                            draw(target, view, result, chunkX, chunkZ, half, REJECTED_COLOR);
                         }
                         return true;
                     }
@@ -179,21 +181,75 @@ public final class StructureLayer implements MapLayer {
         if (!world.hasSeed() || !isCandidate(world.seed(), chunkX, chunkZ)) {
             return null;
         }
-        StructureValidation result = StructureValidationManager.get().resultIfReady(
-                new StructureValidationKey(
-                        StructureValidationKey.mapKeyFor(world), type, chunkX, chunkZ));
+        StructureValidation result = resultAt(world, chunkX, chunkZ);
         if (result == null) {
-            return type.displayName() + ": checking biome";
+            return StructureValidationManager.get().isWaitingForStructureData(type)
+                    ? type.displayName() + ": loading vanilla structure data"
+                    : type.displayName() + ": checking";
         }
         if (result.isRejected()) {
+            // A rejection that names a reason was not about the biome at all - the desert pyramid's
+            // sea-level condition is the one that does this - so the biome must not be blamed.
+            if (result.reason() != null) {
+                return type.displayName() + ": rejected, " + result.reason();
+            }
             return type.displayName() + ": rejected, biome "
                     + (result.sampledBiomeId() == null ? "incompatible" : result.sampledBiomeId());
         }
         if (!result.isCompatible()) {
             return type.displayName() + ": biome not checked - " + result.reason();
         }
-        return type.displayName() + ": biome-compatible"
+        if (result.isExact()) {
+            // Exact: vanilla generates it, so this is worded as a structure, not a candidate.
+            return type.displayName() + ": generates"
+                    + (result.variant() == null ? "" : " (" + result.variant() + ")")
+                    + (result.generationPoint() == null ? "" : " at " + result.generationPoint());
+        }
+        return type.displayName() + ": compatible, non-exact"
                 + (result.variant() == null ? "" : " (" + result.variant() + ")");
+    }
+
+    /**
+     * Where a marker for that candidate sits, in blocks: vanilla's exact generation point when the
+     * result carries one, the candidate chunk's centre otherwise.
+     */
+    public static int markerBlockX(StructureValidation result, int chunkX) {
+        GenerationPoint point = result == null ? null : result.generationPoint();
+        return point != null ? point.x() : (chunkX << 4) + 8;
+    }
+
+    /** @see #markerBlockX */
+    public static int markerBlockZ(StructureValidation result, int chunkZ) {
+        GenerationPoint point = result == null ? null : result.generationPoint();
+        return point != null ? point.z() : (chunkZ << 4) + 8;
+    }
+
+    public StructureType type() {
+        return type;
+    }
+
+    /**
+     * Whether this layer is drawing a marker in that chunk right now.
+     *
+     * <p>What a click can select, so it has to answer the same question {@link #render} does: a
+     * candidate is on screen when it was not rejected, or when the developer view is showing the
+     * rejected and still-pending ones too.
+     */
+    public boolean isMarkerAt(ActiveWorld world, int chunkX, int chunkZ) {
+        if (!enabled || !world.hasSeed() || !isCandidate(world.seed(), chunkX, chunkZ)) {
+            return false;
+        }
+        StructureValidation result = resultAt(world, chunkX, chunkZ);
+        if (result == null) {
+            return showRawCandidates;
+        }
+        return !result.isRejected() || showRawCandidates;
+    }
+
+    /** @return the decision for that candidate, or {@code null} while it is still being made. */
+    public StructureValidation resultAt(ActiveWorld world, int chunkX, int chunkZ) {
+        return StructureValidationManager.get().resultIfReady(new StructureValidationKey(
+                StructureValidationKey.mapKeyFor(world), type, chunkX, chunkZ));
     }
 
     /** Whether grid placement picked exactly this chunk for its region. */
@@ -205,12 +261,10 @@ public final class StructureLayer implements MapLayer {
                 && StructurePlacementEngine.chunkZ(packed) == chunkZ;
     }
 
-    private void draw(MapCanvas canvas, MapViewport viewport, int chunkX, int chunkZ, int half,
-                      int fillColor) {
-        int centerX = (int) Math.round(viewport.blockToScreenX(
-                (chunkX + 0.5) * ChunkRange.CHUNK_SIZE));
-        int centerY = (int) Math.round(viewport.blockToScreenY(
-                (chunkZ + 0.5) * ChunkRange.CHUNK_SIZE));
+    private void draw(MapCanvas canvas, MapViewport viewport, StructureValidation result,
+                      int chunkX, int chunkZ, int half, int fillColor) {
+        int centerX = (int) Math.round(viewport.blockToScreenX(markerBlockX(result, chunkX) + 0.5));
+        int centerY = (int) Math.round(viewport.blockToScreenY(markerBlockZ(result, chunkZ) + 0.5));
         drawMarker(canvas, centerX, centerY, half, fillColor);
     }
 

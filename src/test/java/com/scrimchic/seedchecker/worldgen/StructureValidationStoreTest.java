@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
@@ -208,5 +209,76 @@ class StructureValidationStoreTest {
         assertEquals(1, metrics.rejected());
         assertEquals(1, metrics.undecided());
         assertEquals(3, metrics.cachedResults());
+    }
+
+    @Test
+    void aTypeWaitingForStructureDataIsHeldBackUntilResumed() {
+        // The render thread's protection against the data pack load: one check finds the data
+        // still loading, and from then on its structure type is not queued at all - while every
+        // other type carries on.
+        StructureValidationStore store = new StructureValidationStore(16, 8);
+        BiomeMapKey map = mapWithSeed(SEED);
+        store.useMap(map);
+        StructureValidationKey first = keyIn(map, 0, 0);
+
+        int generation = store.claim(first);
+        assertTrue(store.markWaiting(StructureType.VILLAGE, generation));
+        store.release(first);
+
+        assertTrue(store.isWaiting(StructureType.VILLAGE));
+        assertNull(store.resultIfReady(first), "a check that gave up must not file anything");
+        assertEquals(StructureValidationStore.NO_JOB, store.claim(keyIn(map, 9, 9)));
+        assertNotEquals(StructureValidationStore.NO_JOB, store.claim(
+                new StructureValidationKey(map, StructureType.DESERT_PYRAMID, 9, 9)),
+                "other structure types are not held back");
+
+        store.resumeWaiting();
+        assertFalse(store.isWaiting(StructureType.VILLAGE));
+        assertNotEquals(StructureValidationStore.NO_JOB, store.claim(keyIn(map, 9, 9)));
+        assertEquals(1, store.metrics().deferred());
+    }
+
+    @Test
+    void aStaleJobCannotHoldATypeBackAndANewMapForgetsWaiting() {
+        StructureValidationStore store = new StructureValidationStore(16, 8);
+        BiomeMapKey before = mapWithSeed(SEED);
+        store.useMap(before);
+        int staleGeneration = store.claim(keyIn(before, 0, 0));
+
+        BiomeMapKey after = mapWithSeed(SEED + 1);
+        store.useMap(after);
+        assertFalse(store.markWaiting(StructureType.VILLAGE, staleGeneration));
+        assertFalse(store.isWaiting(StructureType.VILLAGE));
+
+        int current = store.claim(keyIn(after, 1, 1));
+        assertTrue(store.markWaiting(StructureType.VILLAGE, current));
+        assertEquals(1, store.metrics().waitingTypes());
+
+        store.useMap(mapWithSeed(SEED + 2));
+        assertFalse(store.isWaiting(StructureType.VILLAGE), "waiting belongs to one map only");
+    }
+
+    @Test
+    void onlyAnExactResultCarriesAGenerationPoint() {
+        GenerationPoint point = new GenerationPoint(1976, -27, -904);
+        StructureValidation exact =
+                StructureValidation.exactlyCompatible("ancient_city", "minecraft:deep_dark", point);
+        assertTrue(exact.isCompatible());
+        assertTrue(exact.isExact());
+        assertEquals(point, exact.generationPoint());
+
+        // 1.16.5: an exact decision without a computed position.
+        StructureValidation positionless =
+                StructureValidation.exactlyCompatible("village", "minecraft:plains");
+        assertTrue(positionless.isExact());
+        assertNull(positionless.generationPoint());
+
+        assertNull(StructureValidation.compatible("shipwreck", "minecraft:ocean").generationPoint());
+        assertFalse(StructureValidation.compatible("shipwreck", "minecraft:ocean").isExact());
+        assertNull(StructureValidation.incompatible("minecraft:ocean").generationPoint());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> StructureValidation.exactlyCompatible("village_plains", "minecraft:plains",
+                        null));
     }
 }

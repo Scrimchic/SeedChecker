@@ -9,16 +9,26 @@ import net.minecraft.server.Bootstrap;
 import net.minecraft.world.level.biome.Biome;
 
 //? if >=1.18 {
+import java.util.logging.Level;
+
+import com.scrimchic.seedchecker.SeedChecker;
+import com.scrimchic.seedchecker.core.util.LazyInit;
+import com.scrimchic.seedchecker.worldgen.GenerationPoint;
+
 import net.minecraft.SharedConstants;
 import net.minecraft.core.Holder;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.data.registries.VanillaRegistries;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSourceParameterLists;
+import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 import net.minecraft.world.level.levelgen.RandomState;
 //?} else {
@@ -175,22 +185,53 @@ public final class BiomeWorldgenSession {
     private final int lowestQuartY;
     private final int highestQuartY;
 
+    /**
+     * Terrain, for the structures whose generation position is a height rather than a constant.
+     *
+     * <p>A plain {@code NoiseBasedChunkGenerator} over the same biome source and noise settings:
+     * two public constructor arguments, no chunk, no world and no bound tags. Only
+     * {@code getFirstOccupiedHeight} is ever called on it, which builds its own column and touches
+     * nothing shared, so it is as thread-confined as the rest of the session.
+     */
+    private final ChunkGenerator terrain;
+
+    private final LevelHeightAccessor heightAccessor;
+    private final RandomState randomState;
+    private final int seaLevel;
+
+    /**
+     * Exact jigsaw generation for this session's seed, built on first use.
+     *
+     * <p>Not built with the session: it needs the shared vanilla structure data, which is only
+     * loaded once something actually validates a jigsaw candidate, and it is seed dependent, so it
+     * cannot outlive the session.
+     */
+    private JigsawGenerator jigsaw;
+    private boolean jigsawBroken;
+
     private BiomeWorldgenSession(long seed) {
         this.seed = seed;
         HolderLookup.Provider registries = registries();
 
-        NoiseGeneratorSettings settings = registries.lookupOrThrow(Registries.NOISE_SETTINGS)
-                .getOrThrow(NoiseGeneratorSettings.OVERWORLD).value();
+        Holder<NoiseGeneratorSettings> settingsHolder =
+                registries.lookupOrThrow(Registries.NOISE_SETTINGS)
+                        .getOrThrow(NoiseGeneratorSettings.OVERWORLD);
+        NoiseGeneratorSettings settings = settingsHolder.value();
 
         // The (Provider, ResourceKey, long) overload of RandomState.create only exists on 26.x,
         // where HolderLookup.Provider gained "extends HolderGetter.Provider"; this one is on both.
         RandomState randomState = RandomState.create(
                 settings, registries.lookupOrThrow(Registries.NOISE), seed);
 
+        this.randomState = randomState;
         this.climate = randomState.sampler();
         this.biomeSource = MultiNoiseBiomeSource.createFromPreset(
                 registries.lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST)
                         .getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD));
+        this.terrain = new NoiseBasedChunkGenerator(biomeSource, settingsHolder);
+        this.heightAccessor = LevelHeightAccessor.create(
+                settings.noiseSettings().minY(), settings.noiseSettings().height());
+        this.seaLevel = terrain.getSeaLevel();
 
         // Every height a terrain-derived structure position can land on, widened by one block at
         // each end. NoiseBasedChunkGenerator.getBaseHeight walks the column that
@@ -213,6 +254,90 @@ public final class BiomeWorldgenSession {
     /** Highest quart row a terrain-derived structure position in this dimension can sample. */
     public int highestQuartY() {
         return highestQuartY;
+    }
+
+    /**
+     * The exact height vanilla anchors a surface structure at, for one block column.
+     *
+     * <p>{@code ChunkGenerator.getFirstOccupiedHeight(x, z, WORLD_SURFACE_WG, ...)}, which is
+     * {@code getBaseHeight(...) - 1}. That is the call {@code Structure.onTopOfChunkCenter} makes,
+     * so the answer is the stub's Y rather than an estimate of it.
+     *
+     * <p><strong>Expensive.</strong> Measured at 1.8 ms on 1.20.1 and 2.5 ms on 26.2 per column -
+     * roughly two hundred times a biome sample - because every call walks a fresh noise column.
+     * Call it once per position and never on the render thread.
+     */
+    public int surfaceOccupiedHeight(int blockX, int blockZ) {
+        return terrain.getFirstOccupiedHeight(blockX, blockZ, Heightmap.Types.WORLD_SURFACE_WG,
+                heightAccessor, randomState);
+    }
+
+    /** The dimension's sea level, which some structures refuse to generate below. */
+    public int seaLevel() {
+        return seaLevel;
+    }
+
+    /**
+     * Makes exact jigsaw generation usable on this worker.
+     *
+     * <p>If no worker has started loading the shared vanilla structure data, this one does, inline,
+     * and pays for it once. If another worker is already loading it, this returns at once rather
+     * than wait.
+     *
+     * @return {@code READY} when the jigsaw methods below may be called; {@code INITIALIZING} when
+     *         another worker is still loading, so the caller should give up and ask again later;
+     *         {@code FAILED} when the data could not be loaded or this session could not use it
+     */
+    public LazyInit.State prepareJigsaw() {
+        if (jigsaw != null) {
+            return LazyInit.State.READY;
+        }
+        if (jigsawBroken) {
+            return LazyInit.State.FAILED;
+        }
+        LazyInit.State state = VanillaStructureData.loadIfNeeded();
+        if (state != LazyInit.State.READY) {
+            return state;
+        }
+        VanillaStructureData data = VanillaStructureData.get();
+        if (data == null) {
+            // Closed at shutdown between the two reads.
+            return LazyInit.State.FAILED;
+        }
+        try {
+            jigsaw = new JigsawGenerator(data, seed);
+            return LazyInit.State.READY;
+        } catch (Exception | LinkageError failure) {
+            // Remembered, so a session that cannot build one does not try again per candidate.
+            jigsawBroken = true;
+            SeedChecker.LOGGER.log(Level.WARNING, "Exact jigsaw generation is unavailable", failure);
+            return LazyInit.State.FAILED;
+        }
+    }
+
+    /**
+     * Vanilla's own jigsaw generation point. Only after {@link #prepareJigsaw} returned
+     * {@code READY}.
+     *
+     * @param structureId the structure entry, e.g. {@code minecraft:village_plains}
+     * @return the stub position, or {@code null} when vanilla assembles no start piece there
+     */
+    public GenerationPoint jigsawGenerationPoint(String structureId, int chunkX, int chunkZ) {
+        return jigsaw.generationPoint(structureId, chunkX, chunkZ);
+    }
+
+    /**
+     * The biome at a jigsaw generation point, sampled by the same biome source that produced the
+     * point rather than by this session's own - the two agree, but the point came from the
+     * structure data's registries and the check stays inside them.
+     */
+    public String jigsawBiomeIdAt(GenerationPoint point) {
+        return jigsaw.biomeIdAt(point);
+    }
+
+    /** The order vanilla tries a multi-entry structure set's entries in at that chunk. */
+    public int[] structureSelectionOrder(int[] weights, int chunkX, int chunkZ) {
+        return JigsawGenerator.selectionOrder(weights, seed, chunkX, chunkZ);
     }
 
     private static synchronized HolderLookup.Provider registries() {

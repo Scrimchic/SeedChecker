@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import com.scrimchic.seedchecker.core.util.LazyInit;
+import com.scrimchic.seedchecker.worldgen.GenerationPoint;
 import com.scrimchic.seedchecker.worldgen.StructureType;
 import com.scrimchic.seedchecker.worldgen.StructureValidation;
 
@@ -52,33 +54,43 @@ import net.minecraft.world.level.levelgen.feature.StructureFeature;*/
  * else enters the decision - {@code ChunkGenerator.tryGenerateStructure} passes exactly that
  * predicate and no other.
  *
- * <p>So the whole question is where the stub sits, and that splits the supported structures in two.
+ * <p>So the whole question is where the stub sits, and that splits the supported structures in
+ * three - {@link Position}.
  *
- * <p><strong>Knowable position.</strong> {@code SinglePieceStructure} (desert pyramid) and
- * {@code ShipwreckStructure} both return {@code Structure.onTopOfChunkCenter}, which builds the
- * stub at {@code ChunkPos.getMiddleBlockX/Z} - the chunk's own centre column, fixed - with the
- * height from {@code ChunkGenerator.getFirstOccupiedHeight}. Only the height is unknown, and it is
- * bounded: {@code getBaseHeight} walks a column clamped to the dimension and falls back to its
- * minimum, so the stub height never leaves the range {@link BiomeWorldgenSession#lowestQuartY()}
- * to {@link BiomeWorldgenSession#highestQuartY()} covers. That range is enumerated, every quart row
- * of it. If no row in the column is accepted then no terrain can produce one, and the candidate is
- * rejected on proof rather than on a sample that happened to miss.
+ * <p><strong>Exact position: the desert pyramid.</strong> {@code SinglePieceStructure} anchors on
+ * {@code Structure.onTopOfChunkCenter}, so the column is {@code ChunkPos.getMiddleBlockX/Z} and the
+ * height is {@code getFirstOccupiedHeight(WORLD_SURFACE_WG)}, which this session can compute.
+ * {@code findGenerationPoint} additionally refuses the structure outright when the lowest of four
+ * corner heights falls below sea level - a condition no amount of biome enumeration models. Both
+ * halves are reproduced, so both {@code COMPATIBLE} and {@code INCOMPATIBLE} are exact.
  *
- * <p><strong>Unknowable position.</strong> {@code JigsawStructure} (village, ancient city, trial
- * chamber) hands the stub to {@code JigsawPlacement.addPieces}, and the position that comes back is
- * the <em>centre of the start piece's bounding box</em>: {@code (bb.maxX + bb.minX) / 2} and the
- * same in Z. That box depends on which template the start pool drew, on the rotation drawn with it
- * and on that template's size in the structure NBT - so the sampled column is not the candidate
- * chunk's column, and can be tens of blocks outside it. Ancient city, whose start pool re-anchors
- * on a named {@code city_anchor} jigsaw, moves furthest of all.
+ * <p><strong>Known column, bounded height: the shipwreck.</strong>
+ * {@code ShipwreckStructure.findGenerationPoint} also ends in {@code onTopOfChunkCenter}, so the
+ * exact answer is equally within reach - and was deliberately not taken. Measured on the
+ * representative seed, the exact path cost three to five times as much and rejected not one
+ * additional candidate, because an ocean column carries an ocean biome at every height. Instead the
+ * height is bounded: {@code getBaseHeight} walks a column clamped to the dimension and falls back to
+ * its minimum, so the stub height never leaves the range
+ * {@link BiomeWorldgenSession#lowestQuartY()} to {@link BiomeWorldgenSession#highestQuartY()}
+ * covers. That range is enumerated, every quart row of it. If no row is accepted then no terrain
+ * can produce one, so a rejection is still proof; an acceptance is a superset.
  *
- * <p>Their <em>height</em> is another matter and is worth recording, because it is the exact part:
- * with {@code project_start_to_heightmap} absent the algebra in {@code addPieces} cancels out to
- * the raw {@code start_height} sample, which is a constant -27 for the ancient city and a uniform
- * draw over -40 to -20 for the trial chamber. Village projects onto {@code WORLD_SURFACE_WG} and so
- * is terrain-derived. But an exact height with an unknown column decides nothing, so all three
- * report {@code UNKNOWN} and are drawn. Computing the start piece geometry is Phase 3E-2 work,
- * alongside the heightmap.
+ * <p><strong>Exact position through vanilla: the jigsaws.</strong> {@code JigsawStructure}
+ * (village, ancient city, trial chamber) hands the stub to {@code JigsawPlacement.addPieces}, and
+ * the position that comes back is the centre of the start piece's bounding box - which depends on
+ * the template drawn from the start pool, its rotation, its NBT size, a named start jigsaw and, for
+ * the village, the terrain. None of that is reimplemented. Vanilla's own
+ * {@code findValidGenerationPoint} runs against the data pack loaded as real registries
+ * ({@link VanillaStructureData}), and only the biome test at the point it returns is ours - the same
+ * verified sets as everywhere else, so 1.20.1 and 26.2 answer alike. A multi-entry set is tried in
+ * vanilla's own weighted order, so the variant and the point reported are the ones vanilla builds.
+ *
+ * <p>Two things this relies on, both read in the bytecode of 1.20.1 and 26.2 and both checked
+ * against vanilla's {@code Structure.generate} in {@code StructureBiomeValidatorTest}: vanilla
+ * defers piece assembly into the stub, and that deferred step always keeps the start piece -
+ * unless the structure's {@code size} is zero, in which case it returns before handing any piece to
+ * the builder and nothing generates. Such an entry is left {@code UNKNOWN} here rather than
+ * modelled.
  *
  * <h2>Where the modern data comes from</h2>
  *
@@ -113,7 +125,7 @@ public final class StructureBiomeValidator {
             return false;
         }
         for (int i = 0; i < entries.size(); i++) {
-            if (entries.get(i).undecidable != null) {
+            if (entries.get(i).position == Position.UNKNOWN) {
                 return false;
             }
         }
@@ -121,9 +133,37 @@ public final class StructureBiomeValidator {
     }
 
     /**
-     * Decides whether a grid candidate could pass vanilla's biome check.
+     * Whether this version reproduces vanilla's answer for that structure exactly, rather than
+     * bounding it.
      *
-     * <p>Samples a whole biome column, so it must not be called on the render thread.
+     * <p>{@link #canDecide} says a candidate can be rejected; this says the acceptances are exact
+     * too, so {@code COMPATIBLE} means the structure really does generate as far as biome and the
+     * structure's own conditions go. The map says which of the two it is showing.
+     */
+    public static boolean isExact(StructureType type) {
+        List<Entry> entries = data().get(type);
+        if (entries == null) {
+            return false;
+        }
+        for (int i = 0; i < entries.size(); i++) {
+            Position position = entries.get(i).position;
+            if (position != Position.EXACT && position != Position.JIGSAW) {
+                return false;
+            }
+        }
+        return !entries.isEmpty();
+    }
+
+    /**
+     * Decides whether vanilla would generate this structure at a grid candidate - exactly, or as a
+     * safe superset, depending on the structure.
+     *
+     * <p>Samples terrain, biome columns or a jigsaw start, so it must not be called on the render
+     * thread.
+     *
+     * @return the decision, or {@code null} when it needs vanilla structure data that another
+     *         worker is still loading. Nothing about the candidate has been decided then, and it
+     *         should be asked for again later rather than stored.
      */
     public static StructureValidation validate(BiomeWorldgenSession session, StructureType type,
                                                int chunkX, int chunkZ) {
@@ -148,23 +188,64 @@ public final class StructureBiomeValidator {
         return loaded;
     }
 
+    /** How far vanilla's own sample position can be reproduced for one structure entry. */
+    private enum Position {
+
+        /**
+         * Reproduced exactly, so the entry decides a candidate in both directions.
+         *
+         * <p>Reached by computing the terrain height vanilla would anchor on rather than bounding
+         * it, which costs a noise column and is therefore only done where it buys something.
+         */
+        EXACT,
+
+        /**
+         * X and Z exact, height enumerated over the whole dimension.
+         *
+         * <p>A safe superset: a rejection still means no height would have worked, but an
+         * acceptance may be a height vanilla never picks.
+         */
+        COLUMN,
+
+        /**
+         * Exact, through vanilla's own jigsaw assembly over the loaded data pack.
+         *
+         * <p>Decides both ways like {@link #EXACT}, but needs {@link VanillaStructureData}, so a
+         * check can come back pending while that loads.
+         */
+        JIGSAW,
+
+        /** Not computable in this phase. Such an entry can never reject a candidate. */
+        UNKNOWN
+    }
+
     /** One structure entry inside a structure set, with the biomes it accepts. */
     private static final class Entry {
 
         private final String name;
-        private final String biomeTag;
-        private final Set<String> biomeIds;
 
-        /**
-         * Why vanilla's sampled position cannot be reproduced for this entry, or {@code null} when
-         * it can and the entry may therefore reject a candidate.
-         */
+        /** The full structure id, e.g. {@code minecraft:village_plains}; {@code null} on 1.16.5. */
+        private final String structureId;
+
+        private final String biomeTag;
+
+        /** The entry's weight in its structure set, which decides the order vanilla tries it in. */
+        private final int weight;
+
+        private final Set<String> biomeIds;
+        private final Position position;
+
+        /** Why the position is {@link Position#UNKNOWN}, or {@code null} for every other one. */
         private final String undecidable;
 
-        Entry(String name, String biomeTag, Set<String> biomeIds, String undecidable) {
+        Entry(String name, String structureId, String biomeTag, int weight, Set<String> biomeIds,
+              Position position, String undecidable) {
             this.name = name;
+            this.structureId = structureId;
             this.biomeTag = biomeTag;
+            this.weight = weight;
             this.biomeIds = biomeIds;
+            this.position = position;
             this.undecidable = undecidable;
         }
     }
@@ -196,6 +277,15 @@ public final class StructureBiomeValidator {
     }
 
     /**
+     * The weight an entry has in its structure set, which decides the order vanilla tries the
+     * set's entries in. 1 on 1.16.5, which has no structure sets.
+     */
+    public static int variantWeight(StructureType type, String variantName) {
+        Entry entry = entryOf(type, variantName);
+        return entry == null ? 0 : entry.weight;
+    }
+
+    /**
      * The biome tag an entry named in the datapack, or {@code null} on a version that has no
      * tags - 1.16.5 keeps the association on the biome instead.
      */
@@ -222,23 +312,51 @@ public final class StructureBiomeValidator {
 
     //? if >=1.18 {
     /**
-     * Structure types whose {@code findGenerationPoint} was read in the bytecode and found to place
-     * the stub on the candidate chunk's own centre column.
+     * The one structure type whose whole generation point is reproduced exactly.
      *
-     * <p>{@code SinglePieceStructure.findGenerationPoint} and
-     * {@code ShipwreckStructure.findGenerationPoint} both end in
-     * {@code Structure.onTopOfChunkCenter}, which is the only reason those two can be decided.
-     * Anything absent from this set is treated as undecidable, so a structure type added by a later
-     * version is shown rather than filtered on an assumption.
+     * <p>{@code SinglePieceStructure.findGenerationPoint} is short and entirely computable:
+     * reject unless the lowest of four corner heights reaches sea level, then anchor on the chunk
+     * centre at {@code getFirstOccupiedHeight(WORLD_SURFACE_WG)}. Both halves are reproduced in
+     * {@link #exactlySampledBiome}, and the result is checked against vanilla's own
+     * {@code findValidGenerationPoint} in {@code StructureBiomeValidatorTest}.
      */
-    private static final Set<String> CHUNK_CENTRE_COLUMN = new HashSet<String>(java.util.Arrays.asList(
-            "minecraft:desert_pyramid", "minecraft:shipwreck"));
+    private static final String EXACT_SINGLE_PIECE = "minecraft:desert_pyramid";
 
-    private static final String JIGSAW_REASON =
-            "vanilla samples at the start piece's bounding box centre, not at the chunk";
+    /**
+     * Structure types whose stub sits on the candidate chunk's own centre column, but whose height
+     * is not computed.
+     *
+     * <p>{@code ShipwreckStructure.findGenerationPoint} ends in
+     * {@code Structure.onTopOfChunkCenter} like the desert pyramid does, so the exact answer is
+     * within reach - it was measured and deliberately not taken. On the representative seed the
+     * exact path cost three to five times as much and rejected not one additional candidate,
+     * because an ocean column carries an ocean biome at every height the enumeration visits. The
+     * cheaper superset is kept until a reusable heightmap makes the exact one free.
+     */
+    private static final Set<String> CHUNK_CENTRE_COLUMN =
+            new HashSet<String>(java.util.Arrays.asList("minecraft:shipwreck"));
+
+    private static final String EMPTY_JIGSAW_REASON =
+            "a jigsaw of size 0 hands no pieces to its structure start";
+
+    private static final String MIXED_SET_REASON =
+            "this structure set mixes jigsaw and non-jigsaw entries";
+
+    private static final String STRUCTURE_DATA_UNAVAILABLE =
+            "vanilla structure data could not be loaded";
+
+    private static final String NO_START_PIECE = "vanilla assembled no start piece";
+
+    private static final int[] ONLY_ENTRY = {0};
 
     private static final String UNVERIFIED_REASON =
             "the position this structure type generates at has not been verified";
+
+    /** The desert pyramid's footprint, from {@code DesertPyramidStructure}'s call to super. */
+    private static final int SINGLE_PIECE_WIDTH = 21;
+    private static final int SINGLE_PIECE_DEPTH = 21;
+
+    private static final String BELOW_SEA_LEVEL = "lowest corner is below sea level";
 
     /** Structure set path in the vanilla datapack, per structure type. */
     private static String structureSetPath(StructureType type) {
@@ -258,44 +376,242 @@ public final class StructureBiomeValidator {
         }
     }
 
-    private static String undecidableReason(String structureTypeId) {
-        if (CHUNK_CENTRE_COLUMN.contains(structureTypeId)) {
+    private static Position positionOf(String structureTypeId, int jigsawSize) {
+        if (EXACT_SINGLE_PIECE.equals(structureTypeId)) {
+            return Position.EXACT;
+        }
+        if ("minecraft:jigsaw".equals(structureTypeId)) {
+            return jigsawSize > 0 ? Position.JIGSAW : Position.UNKNOWN;
+        }
+        return CHUNK_CENTRE_COLUMN.contains(structureTypeId) ? Position.COLUMN : Position.UNKNOWN;
+    }
+
+    private static String undecidableReason(String structureTypeId, int jigsawSize) {
+        if (positionOf(structureTypeId, jigsawSize) != Position.UNKNOWN) {
             return null;
         }
-        return "minecraft:jigsaw".equals(structureTypeId) ? JIGSAW_REASON : UNVERIFIED_REASON;
+        return "minecraft:jigsaw".equals(structureTypeId) ? EMPTY_JIGSAW_REASON : UNVERIFIED_REASON;
+    }
+
+    private static boolean isJigsawSet(List<Entry> entries) {
+        for (int i = 0; i < entries.size(); i++) {
+            if (entries.get(i).position != Position.JIGSAW) {
+                return false;
+            }
+        }
+        return !entries.isEmpty();
     }
 
     /**
-     * Every biome vanilla could see for this candidate, tested against the entries that know where
-     * vanilla looks.
+     * Reproduces {@code ChunkGenerator.createStructures} for a set of jigsaw structures: the entries
+     * in vanilla's weighted order, and for each, vanilla's own generation point followed by the
+     * biome test at it. The first entry that passes is the one vanilla builds.
      *
-     * <p>The column is the chunk's centre - {@code ChunkPos.getMiddleBlockX} is
-     * {@code (chunkX &lt;&lt; 4) + 8} and {@code QuartPos.fromBlock} shifts that right by two - and
-     * every quart row the dimension allows is visited, so the rejection below is exhaustive rather
-     * than sampled.
+     * @return the decision, or {@code null} while the vanilla structure data is still loading on
+     *         another worker
+     */
+    private static StructureValidation evaluateJigsawSet(BiomeWorldgenSession session,
+                                                         List<Entry> entries,
+                                                         int chunkX, int chunkZ) {
+        LazyInit.State state = session.prepareJigsaw();
+        if (state == LazyInit.State.FAILED) {
+            // Cached like any other answer, so a broken data pack costs one check per candidate
+            // rather than one per frame - and the marker stays visible.
+            return StructureValidation.unknown(STRUCTURE_DATA_UNAVAILABLE);
+        }
+        if (state != LazyInit.State.READY) {
+            return null;
+        }
+
+        int[] order;
+        if (entries.size() == 1) {
+            order = ONLY_ENTRY;
+        } else {
+            int[] weights = new int[entries.size()];
+            for (int i = 0; i < weights.length; i++) {
+                weights[i] = entries.get(i).weight;
+            }
+            order = session.structureSelectionOrder(weights, chunkX, chunkZ);
+        }
+
+        String firstBiome = null;
+        for (int i = 0; i < order.length; i++) {
+            Entry entry = entries.get(order[i]);
+            GenerationPoint point = session.jigsawGenerationPoint(entry.structureId, chunkX, chunkZ);
+            if (point == null) {
+                // No start piece: vanilla's attempt fails and it moves on to the next entry.
+                continue;
+            }
+            String biomeId = session.jigsawBiomeIdAt(point);
+            if (firstBiome == null) {
+                firstBiome = biomeId;
+            }
+            if (entry.biomeIds.contains(biomeId)) {
+                return StructureValidation.exactlyCompatible(entry.name, biomeId, point);
+            }
+        }
+        return firstBiome == null
+                ? StructureValidation.incompatible(null, NO_START_PIECE)
+                : StructureValidation.incompatible(firstBiome);
+    }
+
+    /**
+     * Runs whichever of the three position models each entry of the set supports, and combines
+     * them.
+     *
+     * <p>A set may mix them: the shipwrecks set holds one entry this phase reproduces exactly and
+     * one it only bounds. Vanilla tries a set's entries until one generates, so any entry
+     * accepting is a yes, and only a set where <em>every</em> entry was decided and refused is a
+     * no.
      */
     private static StructureValidation evaluate(BiomeWorldgenSession session, List<Entry> entries,
                                                 int chunkX, int chunkZ) {
+        if (isJigsawSet(entries)) {
+            return evaluateJigsawSet(session, entries, chunkX, chunkZ);
+        }
+
         String undecidable = null;
-        boolean anyDecidable = false;
+        List<Entry> columnEntries = null;
+        List<Entry> exactEntries = null;
+
         for (int i = 0; i < entries.size(); i++) {
-            if (entries.get(i).undecidable == null) {
-                anyDecidable = true;
+            Entry entry = entries.get(i);
+            if (entry.position == Position.UNKNOWN) {
+                undecidable = entry.undecidable;
+            } else if (entry.position == Position.JIGSAW) {
+                // No vanilla set does this; were one to, its jigsaw half is not evaluated here.
+                undecidable = MIXED_SET_REASON;
+            } else if (entry.position == Position.EXACT) {
+                if (exactEntries == null) {
+                    exactEntries = new ArrayList<Entry>(entries.size());
+                }
+                exactEntries.add(entry);
             } else {
-                undecidable = entries.get(i).undecidable;
+                if (columnEntries == null) {
+                    columnEntries = new ArrayList<Entry>(entries.size());
+                }
+                columnEntries.add(entry);
             }
         }
-        if (!anyDecidable) {
+        if (exactEntries == null && columnEntries == null) {
             return StructureValidation.unknown(undecidable);
         }
 
+        Match match = new Match();
+
+        // Exact entries first. They are the cheaper question for the structure they cover - one
+        // terrain column rather than a biome column - and they answer it outright.
+        if (exactEntries != null) {
+            for (int i = 0; i < exactEntries.size(); i++) {
+                exactlySampledBiome(session, exactEntries.get(i), chunkX, chunkZ, match);
+            }
+        }
+        if (match.entry == null && columnEntries != null) {
+            scanBiomeColumn(session, columnEntries, chunkX, chunkZ, match);
+        }
+
+        if (match.entry != null) {
+            // The variant is only reported when exactly one entry can explain the candidate. When
+            // several could, vanilla picks between them with a seeded weighted draw that this phase
+            // does not reproduce, so claiming one would be a guess.
+            String variant = match.ambiguous ? null : match.entry.name;
+            return match.entry.position == Position.EXACT
+                    ? StructureValidation.exactlyCompatible(variant, match.biomeId, match.point)
+                    : StructureValidation.compatible(variant, match.biomeId);
+        }
+        if (undecidable != null) {
+            // Some entry of this set might still accept it somewhere this cannot look.
+            return StructureValidation.unknown(undecidable);
+        }
+        return match.rejectedBecause == null
+                ? StructureValidation.incompatible(match.lastSeen)
+                : StructureValidation.incompatible(match.lastSeen, match.rejectedBecause);
+    }
+
+    /** What the entry scan found, gathered in one place so both passes can fill it in. */
+    private static final class Match {
+
+        private Entry entry;
+        private String biomeId;
+        private boolean ambiguous;
+
+        /** Where the accepted entry generates, when its position was reproduced exactly. */
+        private GenerationPoint point;
+
+        /** Some biome that was seen and not accepted, for the debug readout. */
+        private String lastSeen;
+
+        /** Set when an exact entry was rejected by something other than its biome. */
+        private String rejectedBecause;
+
+        void accept(Entry candidate, String biome) {
+            if (entry == null) {
+                entry = candidate;
+                biomeId = biome;
+            } else if (entry != candidate) {
+                ambiguous = true;
+            }
+        }
+
+        void accept(Entry candidate, String biome, GenerationPoint exactPoint) {
+            if (entry == null) {
+                point = exactPoint;
+            }
+            accept(candidate, biome);
+        }
+    }
+
+    /**
+     * Reproduces {@code SinglePieceStructure.findGenerationPoint} followed by
+     * {@code Structure.isValidBiome}, exactly.
+     *
+     * <p>Vanilla's condition is a conjunction - the lowest of four corner heights must reach sea
+     * level <em>and</em> the biome above the chunk centre must be accepted - so the two halves may
+     * be tested in either order without changing the answer. The biome goes first because it
+     * rejects the great majority of candidates for one terrain column instead of five, which
+     * measured four times faster over a representative area.
+     */
+    private static void exactlySampledBiome(BiomeWorldgenSession session, Entry entry,
+                                            int chunkX, int chunkZ, Match match) {
+        // ChunkPos.getMiddleBlockX/Z, the column Structure.onTopOfChunkCenter anchors on.
+        int middleX = (chunkX << 4) + 8;
+        int middleZ = (chunkZ << 4) + 8;
+
+        int stubY = session.surfaceOccupiedHeight(middleX, middleZ);
+        String biomeId = session.sampleBiomeIdAtQuart(middleX >> 2, stubY >> 2, middleZ >> 2);
+        match.lastSeen = biomeId;
+        if (!entry.biomeIds.contains(biomeId)) {
+            return;
+        }
+
+        int minX = chunkX << 4;
+        int minZ = chunkZ << 4;
+        int lowestCorner = Math.min(
+                Math.min(session.surfaceOccupiedHeight(minX, minZ),
+                        session.surfaceOccupiedHeight(minX, minZ + SINGLE_PIECE_DEPTH)),
+                Math.min(session.surfaceOccupiedHeight(minX + SINGLE_PIECE_WIDTH, minZ),
+                        session.surfaceOccupiedHeight(minX + SINGLE_PIECE_WIDTH,
+                                minZ + SINGLE_PIECE_DEPTH)));
+        if (lowestCorner < session.seaLevel()) {
+            match.rejectedBecause = BELOW_SEA_LEVEL;
+            return;
+        }
+        match.accept(entry, biomeId, new GenerationPoint(middleX, stubY, middleZ));
+    }
+
+    /**
+     * Every biome vanilla could see for this candidate, tested against the entries whose column is
+     * known but whose height is not.
+     *
+     * <p>The column is the chunk's centre - {@code ChunkPos.getMiddleBlockX} is
+     * {@code (chunkX &lt;&lt; 4) + 8} and {@code QuartPos.fromBlock} shifts that right by two - and
+     * every quart row the dimension allows is visited, so a rejection here is exhaustive rather
+     * than sampled.
+     */
+    private static void scanBiomeColumn(BiomeWorldgenSession session, List<Entry> entries,
+                                        int chunkX, int chunkZ, Match match) {
         int quartX = (chunkX << 2) + 2;
         int quartZ = (chunkZ << 2) + 2;
-
-        Entry matched = null;
-        boolean ambiguous = false;
-        String matchedBiome = null;
-        String lastSeen = null;
         // Adjacent quart rows repeat the same biome for long stretches, so the entry scan below
         // runs a handful of times per column rather than once per row.
         Set<String> seen = new HashSet<String>();
@@ -305,32 +621,14 @@ public final class StructureBiomeValidator {
             if (!seen.add(biomeId)) {
                 continue;
             }
-            lastSeen = biomeId;
+            match.lastSeen = biomeId;
             for (int i = 0; i < entries.size(); i++) {
                 Entry entry = entries.get(i);
-                if (entry.undecidable != null || !entry.biomeIds.contains(biomeId)) {
-                    continue;
-                }
-                if (matched == null) {
-                    matched = entry;
-                    matchedBiome = biomeId;
-                } else if (matched != entry) {
-                    ambiguous = true;
+                if (entry.biomeIds.contains(biomeId)) {
+                    match.accept(entry, biomeId);
                 }
             }
         }
-
-        if (matched != null) {
-            // The variant is only reported when exactly one entry can explain the candidate. When
-            // several could, vanilla picks between them with a seeded weighted draw that this phase
-            // does not reproduce, so claiming one would be a guess.
-            return StructureValidation.compatible(ambiguous ? null : matched.name, matchedBiome);
-        }
-        if (undecidable != null) {
-            // Some entry of this set might still accept it somewhere this cannot look.
-            return StructureValidation.unknown(undecidable);
-        }
-        return StructureValidation.incompatible(lastSeen);
     }
 
     private static Map<StructureType, List<Entry>> load() {
@@ -353,7 +651,8 @@ public final class StructureBiomeValidator {
             JsonArray structures = set.getAsJsonArray("structures");
             for (int i = 0; i < structures.size(); i++) {
                 JsonObject selection = structures.get(i).getAsJsonObject();
-                String structureId = selection.get("structure").getAsString();
+                String structureId = normalizeId(selection.get("structure").getAsString());
+                int weight = selection.has("weight") ? selection.get("weight").getAsInt() : 1;
                 JsonObject structure = readJson("worldgen/structure/" + pathOf(structureId));
                 if (structure == null || !structure.has("biomes")) {
                     continue;
@@ -369,9 +668,11 @@ public final class StructureBiomeValidator {
                     String structureTypeId = structure.has("type")
                             ? normalizeId(structure.get("type").getAsString())
                             : null;
-                    entries.add(new Entry(shortName(structureId), tag,
+                    int size = structure.has("size") ? structure.get("size").getAsInt() : 0;
+                    entries.add(new Entry(shortName(structureId), structureId, tag, weight,
                             Collections.unmodifiableSet(biomes),
-                            undecidableReason(structureTypeId)));
+                            positionOf(structureTypeId, size),
+                            undecidableReason(structureTypeId, size)));
                 }
             }
             if (!entries.isEmpty()) {
@@ -500,7 +801,9 @@ public final class StructureBiomeValidator {
         for (int i = 0; i < entries.size(); i++) {
             Entry entry = entries.get(i);
             if (entry.biomeIds.contains(biomeId)) {
-                return StructureValidation.compatible(entry.name, biomeId);
+                // Exact in both directions here: Phase 3E-2b checked this answer against vanilla's
+                // real generate() over 59,026 candidates without a single disagreement.
+                return StructureValidation.exactlyCompatible(entry.name, biomeId);
             }
         }
         return StructureValidation.incompatible(biomeId);
@@ -538,9 +841,15 @@ public final class StructureBiomeValidator {
         for (Map.Entry<StructureType, Set<String>> entry : biomesByType.entrySet()) {
             // 1.16.5 has one StructureFeature per type - village variants are chosen inside the
             // jigsaw pool at generation time, not by a separate structure entry - so there is
-            // exactly one entry and no variant to report. Nothing is undecidable here.
+            // exactly one entry and no variant to report.
+            //
+            // The position is EXACT for all of them, and Phase 3E-2b proved that claim end to end:
+            // the sampled position is a literal, isFeatureChunk is vanilla's "return true" for
+            // each of the three, and every generatePieces adds its first piece unconditionally, so
+            // an accepted biome really does mean the structure generates.
             loaded.put(entry.getKey(), Collections.singletonList(
-                    new Entry(null, null, Collections.unmodifiableSet(entry.getValue()), null)));
+                    new Entry(null, null, null, 1,
+                            Collections.unmodifiableSet(entry.getValue()), Position.EXACT, null)));
         }
         return loaded;
     }

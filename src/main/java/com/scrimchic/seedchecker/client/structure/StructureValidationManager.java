@@ -6,6 +6,8 @@ import com.scrimchic.seedchecker.SeedChecker;
 import com.scrimchic.seedchecker.client.worldgen.WorldgenWorkers;
 import com.scrimchic.seedchecker.platform.BiomeWorldgenSession;
 import com.scrimchic.seedchecker.platform.StructureBiomeValidator;
+import com.scrimchic.seedchecker.platform.VanillaStructureData;
+import com.scrimchic.seedchecker.worldgen.StructureType;
 import com.scrimchic.seedchecker.worldgen.StructureValidation;
 import com.scrimchic.seedchecker.worldgen.StructureValidationKey;
 import com.scrimchic.seedchecker.worldgen.StructureValidationStore;
@@ -70,11 +72,20 @@ public final class StructureValidationManager {
         // Deliberately no "is this type supported" check here: answering it loads the version's
         // structure-biome data, which on 1.16.5 means initialising the whole builtin biome
         // registry. That must happen on a worker, never on the render thread.
+        if (store.isWaiting(key.type())) {
+            // A volatile read, not a load: while the vanilla data pack is still loading on some
+            // worker there is no point queueing checks that would only give up again.
+            if (VanillaStructureData.isLoading()) {
+                return false;
+            }
+            store.resumeWaiting();
+        }
         final int jobGeneration = store.claim(key);
         if (jobGeneration == StructureValidationStore.NO_JOB) {
             return false;
         }
-        boolean submitted = WorldgenWorkers.get().submit(key.map(), new WorldgenWorkers.SessionTask() {
+        boolean submitted = WorldgenWorkers.get().submit(key.map(),
+                WorldgenWorkers.Lane.STRUCTURE_CHECKS, new WorldgenWorkers.SessionTask() {
             @Override
             public void run(BiomeWorldgenSession session) {
                 validate(session, key, jobGeneration);
@@ -88,6 +99,11 @@ public final class StructureValidationManager {
 
     public StructureValidationStore.Metrics metrics() {
         return store.metrics();
+    }
+
+    /** @return whether that type's candidates are waiting for vanilla structure data to load. */
+    public boolean isWaitingForStructureData(StructureType type) {
+        return store.isWaiting(type) && VanillaStructureData.isLoading();
     }
 
     // --------------------------------------------------------------- worker side
@@ -104,6 +120,12 @@ public final class StructureValidationManager {
             // for an unknown type, so there is no "supported?" branch here.
             StructureValidation validation =
                     StructureBiomeValidator.validate(session, key.type(), key.chunkX(), key.chunkZ());
+            if (validation == null) {
+                // The data this check needs is still loading on another worker. Nothing is filed,
+                // so the candidate is asked for again once it has loaded.
+                store.markWaiting(key.type(), jobGeneration);
+                return;
+            }
             // Stored outside the sampling, so worldgen never runs while the store lock is held.
             store.store(key, validation, jobGeneration, System.nanoTime() - start);
         } catch (Throwable failure) {

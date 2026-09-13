@@ -77,7 +77,7 @@ public final class BiomeTileManager {
             return false;
         }
         boolean submitted = WorldgenWorkers.get().submit(key.map(),
-                new WorldgenWorkers.SessionTask() {
+                WorldgenWorkers.Lane.BIOME_TILES, new WorldgenWorkers.SessionTask() {
                     @Override
                     public void run(BiomeWorldgenSession session) {
                         runJob(session, key, jobGeneration);
