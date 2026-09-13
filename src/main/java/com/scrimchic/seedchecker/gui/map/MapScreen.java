@@ -3,6 +3,7 @@ package com.scrimchic.seedchecker.gui.map;
 import java.util.List;
 
 import com.scrimchic.seedchecker.client.biome.BiomeTileManager;
+import com.scrimchic.seedchecker.client.structure.StrongholdManager;
 import com.scrimchic.seedchecker.client.structure.StructureGeometryManager;
 import com.scrimchic.seedchecker.client.structure.StructureValidationManager;
 import com.scrimchic.seedchecker.client.world.WorldProfileManager;
@@ -12,6 +13,7 @@ import com.scrimchic.seedchecker.core.map.MapViewportMemory;
 import com.scrimchic.seedchecker.gui.map.layer.MapLayer;
 import com.scrimchic.seedchecker.gui.map.layer.MapLayers;
 import com.scrimchic.seedchecker.gui.map.layer.StructureLayer;
+import com.scrimchic.seedchecker.gui.map.layer.StructureMarkerLayer;
 import com.scrimchic.seedchecker.platform.MinecraftBridge;
 import com.scrimchic.seedchecker.platform.PlayerNavigator;
 import com.scrimchic.seedchecker.platform.VanillaStructureData;
@@ -22,6 +24,8 @@ import com.scrimchic.seedchecker.world.SeedParser;
 import com.scrimchic.seedchecker.world.WorldContext;
 import com.scrimchic.seedchecker.world.WorldProfile;
 import com.scrimchic.seedchecker.worldgen.GenerationPoint;
+import com.scrimchic.seedchecker.worldgen.StrongholdPlacementEngine;
+import com.scrimchic.seedchecker.worldgen.StrongholdPosition;
 import com.scrimchic.seedchecker.worldgen.StructureBounds;
 import com.scrimchic.seedchecker.worldgen.StructureGeometry;
 import com.scrimchic.seedchecker.worldgen.StructureValidation;
@@ -134,7 +138,7 @@ public final class MapScreen extends Screen {
      * <p>Per screen rather than per session: it is a look-at-this-one tool, and reopening the map
      * with a stale selection would be more confusing than helpful.
      */
-    private StructureLayer selectedLayer;
+    private StructureMarkerLayer selectedLayer;
     private int selectedChunkX;
     private int selectedChunkZ;
 
@@ -228,6 +232,9 @@ public final class MapScreen extends Screen {
         }
         if (structureMap != null) {
             StructureGeometryManager.get().useMap(structureMap);
+            // Even with the stronghold layer switched off, so a seed or world change always drops
+            // the old list.
+            StrongholdManager.get().useMap(structureMap);
         }
 
         canvas.fill(0, 0, this.width, this.height, COLOR_BACKGROUND);
@@ -266,13 +273,17 @@ public final class MapScreen extends Screen {
      * away, and for a jigsaw structure it is not computed at all yet.
      */
     private TextPanel buildSelectionPanel(ActiveWorld world) {
-        StructureLayer layer = selectedLayer;
+        StructureMarkerLayer layer = selectedLayer;
         int anchorX = (selectedChunkX << 4) + 8;
         int anchorZ = (selectedChunkZ << 4) + 8;
 
         TextPanel panel = new TextPanel(COLOR_PANEL, COLOR_TEXT_HOVER);
         panel.line("SELECTED", COLOR_SECTION);
         panel.line(layer.displayName(), COLOR_TEXT);
+        String detail = layer.describeSelection(world, selectedChunkX, selectedChunkZ);
+        if (detail != null) {
+            panel.line(detail, COLOR_TEXT_DIM);
+        }
 
         StructureValidation result = layer.resultAt(world, selectedChunkX, selectedChunkZ);
         GenerationPoint point = result == null ? null : result.generationPoint();
@@ -300,6 +311,11 @@ public final class MapScreen extends Screen {
             panel.line("Generation position (exact)", COLOR_TEXT);
             panel.line("X " + point.x() + "   Y " + point.y() + "   Z " + point.z(), COLOR_TEXT);
             panel.line("teleport keeps your own Y", COLOR_TEXT_DIM);
+        } else if (result != null && result.isExact() && result.isCompatible()) {
+            // Exact, on a version that computes no generation point: the chunk is certain, the
+            // block the start is built from is not.
+            panel.line("Chunk centre " + anchorX + ", " + anchorZ, COLOR_TEXT);
+            panel.line("exact chunk; no generation point on this version", COLOR_TEXT_DIM);
         } else {
             panel.line("Candidate anchor " + anchorX + ", " + anchorZ, COLOR_TEXT);
             panel.line("the candidate chunk centre, not a structure position", COLOR_TEXT_DIM);
@@ -319,6 +335,29 @@ public final class MapScreen extends Screen {
             panel.line(selectionNotice, COLOR_TEXT_DIM);
         }
         return panel;
+    }
+
+    /** How far the stronghold list has got, and the one nearest the player once it is known. */
+    private static void appendStrongholdRows(TextPanel panel) {
+        StrongholdManager strongholds = StrongholdManager.get();
+        List<StrongholdPosition> positions = strongholds.positionsIfReady();
+        if (positions == null) {
+            if (strongholds.isComputing()) {
+                panel.line("Strongholds locating...", COLOR_TEXT_DIM);
+            } else if (strongholds.failure() != null) {
+                panel.line("Strongholds unavailable: " + strongholds.failure(), COLOR_TEXT_DIM);
+            }
+            return;
+        }
+        String line = "Strongholds " + positions.size() + " in " + strongholds.lastMillis() + " ms";
+        PlayerPosition player = MinecraftBridge.currentPlayerPosition();
+        StrongholdPosition nearest = player == null
+                ? null : StrongholdPlacementEngine.nearest(positions, player.x(), player.z());
+        if (nearest != null) {
+            line += ", nearest #" + (nearest.index() + 1) + " at "
+                    + ((nearest.chunkX() << 4) + 8) + ", " + ((nearest.chunkZ() << 4) + 8);
+        }
+        panel.line(line, COLOR_TEXT_DIM);
     }
 
     private void clearSelection() {
@@ -603,6 +642,7 @@ public final class MapScreen extends Screen {
                 + (checks.failed() > 0 ? ", " + checks.failed() + " failed" : ""),
                 COLOR_TEXT_DIM);
         panel.line("Check ms " + String.format("%.1f avg", checks.averageMillis()), COLOR_TEXT_DIM);
+        appendStrongholdRows(panel);
         long dataMillis = VanillaStructureData.loadMillis();
         if (VanillaStructureData.isLoading() || dataMillis >= 0 || checks.deferred() > 0) {
             panel.line("Struct data " + (VanillaStructureData.isLoading() ? "loading"
@@ -625,11 +665,11 @@ public final class MapScreen extends Screen {
         ActiveWorld world = WorldProfileManager.get().currentWorld();
         List<MapLayer> layers = LAYERS.all();
         for (int i = 0; i < layers.size(); i++) {
-            if (!(layers.get(i) instanceof StructureLayer)) {
+            if (!(layers.get(i) instanceof StructureMarkerLayer)) {
                 continue;
             }
             String description =
-                    ((StructureLayer) layers.get(i)).describeAt(world, chunkX, chunkZ);
+                    ((StructureMarkerLayer) layers.get(i)).describeAt(world, chunkX, chunkZ);
             if (description != null) {
                 panel.line("        " + description, COLOR_TEXT);
             }
@@ -716,7 +756,7 @@ public final class MapScreen extends Screen {
         int centreChunkZ = (int) Math.floor(blockZ) >> 4;
         int radius = selectChunkRadius();
 
-        StructureLayer bestLayer = null;
+        StructureMarkerLayer bestLayer = null;
         int bestChunkX = 0;
         int bestChunkZ = 0;
         double bestDistance = Double.MAX_VALUE;
@@ -725,10 +765,10 @@ public final class MapScreen extends Screen {
         for (int chunkZ = centreChunkZ - radius; chunkZ <= centreChunkZ + radius; chunkZ++) {
             for (int chunkX = centreChunkX - radius; chunkX <= centreChunkX + radius; chunkX++) {
                 for (int i = 0; i < layers.size(); i++) {
-                    if (!(layers.get(i) instanceof StructureLayer)) {
+                    if (!(layers.get(i) instanceof StructureMarkerLayer)) {
                         continue;
                     }
-                    StructureLayer layer = (StructureLayer) layers.get(i);
+                    StructureMarkerLayer layer = (StructureMarkerLayer) layers.get(i);
                     if (!layer.isMarkerAt(world, chunkX, chunkZ)) {
                         continue;
                     }

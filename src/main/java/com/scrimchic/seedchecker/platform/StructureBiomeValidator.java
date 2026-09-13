@@ -745,6 +745,23 @@ public final class StructureBiomeValidator {
         return immutable;
     }
 
+    /**
+     * A file out of the vanilla data pack, for other structure data this package reads the same way
+     * - the stronghold set's ring placement.
+     *
+     * @return the parsed object, or {@code null} when the file is absent or malformed
+     */
+    static JsonObject vanillaDataJson(String dataPath) {
+        return readJson(dataPath);
+    }
+
+    /** The biome ids a data pack biome field names - a biome, a list, or a tag, recursively. */
+    static Set<String> resolveBiomes(JsonElement element) {
+        Set<String> biomes = new HashSet<String>();
+        collectBiomes(element, biomes, new HashMap<String, Set<String>>(), new HashSet<String>());
+        return Collections.unmodifiableSet(biomes);
+    }
+
     /** Reads one file out of the vanilla datapack inside the Minecraft jar. */
     private static JsonObject readJson(String dataPath) {
         java.io.InputStream in = StructureBiomeValidator.class

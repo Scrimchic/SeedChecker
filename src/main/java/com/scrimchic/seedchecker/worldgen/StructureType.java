@@ -3,9 +3,9 @@ package com.scrimchic.seedchecker.worldgen;
 /**
  * The structures Seed Checker can place, independent of Minecraft version.
  *
- * <p>Only structures that use vanilla's grid ("random spread") placement belong here. Strongholds
- * deliberately do not: they sit on concentric rings, which is a different algorithm and needs
- * biome data to solve.
+ * <p>Grid ("random spread") structures, placed by {@link StructurePlacementEngine}, and the
+ * stronghold, which sits on concentric rings instead and is placed by
+ * {@link StrongholdPlacementEngine}. {@link StructurePlacements} lists only the grid ones.
  *
  * <p>Which of these actually exist in the running version is answered by
  * {@link StructurePlacements}, not by this enum.
@@ -16,7 +16,10 @@ public enum StructureType {
     DESERT_PYRAMID("Desert Pyramid"),
     SHIPWRECK("Shipwreck"),
     ANCIENT_CITY("Ancient City"),
-    TRIAL_CHAMBER("Trial Chamber");
+    TRIAL_CHAMBER("Trial Chamber"),
+
+    /** Not grid placed; never in {@link StructurePlacements}. */
+    STRONGHOLD("Stronghold");
 
     private final String displayName;
 

@@ -6,6 +6,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import com.scrimchic.seedchecker.SeedChecker;
 import com.scrimchic.seedchecker.client.biome.BiomeTileManager;
 import com.scrimchic.seedchecker.client.keybind.SeedCheckerKeyBindings;
+import com.scrimchic.seedchecker.client.structure.StrongholdManager;
 import com.scrimchic.seedchecker.client.structure.StructureGeometryManager;
 import com.scrimchic.seedchecker.client.structure.StructureValidationManager;
 import com.scrimchic.seedchecker.client.worldgen.WorldgenWorkers;
@@ -23,6 +24,7 @@ public final class SeedCheckerClient implements ClientModInitializer {
         BiomeTileManager.initClient();
         StructureValidationManager.initClient();
         StructureGeometryManager.initClient();
+        StrongholdManager.initClient();
         SeedCheckerKeyBindings.register();
         SeedChecker.LOGGER.info("Seed Checker client initialized.");
     }

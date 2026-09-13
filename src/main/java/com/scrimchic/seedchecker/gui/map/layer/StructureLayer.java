@@ -32,7 +32,7 @@ import com.scrimchic.seedchecker.worldgen.biome.BiomeMapKey;
  * <p>One instance per structure type; {@link MapLayers#createDefault()} only creates the types the
  * running version actually has, so an unsupported structure never appears in the UI at all.
  */
-public final class StructureLayer implements MapLayer {
+public final class StructureLayer implements StructureMarkerLayer {
 
     /** Region scan budget per frame. At ~0.2 us per region this stays well under a millisecond. */
     private static final long MAX_REGIONS = 2048L;
@@ -177,6 +177,7 @@ public final class StructureLayer implements MapLayer {
      *
      * @return the description, or {@code null} when this chunk is not a candidate at all
      */
+    @Override
     public String describeAt(ActiveWorld world, int chunkX, int chunkZ) {
         if (!world.hasSeed() || !isCandidate(world.seed(), chunkX, chunkZ)) {
             return null;
@@ -224,8 +225,14 @@ public final class StructureLayer implements MapLayer {
         return point != null ? point.z() : (chunkZ << 4) + 8;
     }
 
+    @Override
     public StructureType type() {
         return type;
+    }
+
+    @Override
+    public String describeSelection(ActiveWorld world, int chunkX, int chunkZ) {
+        return null;
     }
 
     /**
@@ -235,6 +242,7 @@ public final class StructureLayer implements MapLayer {
      * candidate is on screen when it was not rejected, or when the developer view is showing the
      * rejected and still-pending ones too.
      */
+    @Override
     public boolean isMarkerAt(ActiveWorld world, int chunkX, int chunkZ) {
         if (!enabled || !world.hasSeed() || !isCandidate(world.seed(), chunkX, chunkZ)) {
             return false;
@@ -247,6 +255,7 @@ public final class StructureLayer implements MapLayer {
     }
 
     /** @return the decision for that candidate, or {@code null} while it is still being made. */
+    @Override
     public StructureValidation resultAt(ActiveWorld world, int chunkX, int chunkZ) {
         return StructureValidationManager.get().resultIfReady(new StructureValidationKey(
                 StructureValidationKey.mapKeyFor(world), type, chunkX, chunkZ));

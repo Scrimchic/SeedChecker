@@ -36,6 +36,8 @@ public final class MapLayers {
         for (StructureType type : placements.types()) {
             created.add(new StructureLayer(type, placements.get(type)));
         }
+        // Not grid placed, so not in StructurePlacements; every supported version has strongholds.
+        created.add(new StrongholdLayer());
         return created;
     }
 

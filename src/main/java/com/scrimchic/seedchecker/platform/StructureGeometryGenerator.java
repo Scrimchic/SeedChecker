@@ -19,6 +19,7 @@ import com.scrimchic.seedchecker.worldgen.StructureBounds;
 
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.data.BuiltinRegistries;
+import net.minecraft.data.worldgen.StructureFeatures;
 import net.minecraft.server.packs.PackType;
 import net.minecraft.server.packs.VanillaPackResources;
 import net.minecraft.server.packs.resources.SimpleReloadableResourceManager;
@@ -97,8 +98,10 @@ public final class StructureGeometryGenerator {
      */
     public static StructureGeometry generate(BiomeWorldgenSession session, StructureType type,
                                              String variant, int chunkX, int chunkZ) {
-        String structureId = variant == null
-                ? null : StructureBiomeValidator.jigsawStructureId(type, variant);
+        // The stronghold is placed by its own ring list; its pieces are assembled through the same
+        // stub path, and StrongholdStructure.findGenerationPoint never refuses.
+        String structureId = type == StructureType.STRONGHOLD ? "minecraft:stronghold"
+                : variant == null ? null : StructureBiomeValidator.jigsawStructureId(type, variant);
         if (structureId == null) {
             return StructureGeometry.unavailable(
                     type == StructureType.SHIPWRECK ? NOT_EXACT : HEIGHT_AT_PLACEMENT);
@@ -128,6 +131,9 @@ public final class StructureGeometryGenerator {
      ^/
     public static StructureGeometry generate(BiomeWorldgenSession session, StructureType type,
                                              String variant, int chunkX, int chunkZ) {
+        if (type == StructureType.STRONGHOLD) {
+            return strongholdGeometry(session, chunkX, chunkZ);
+        }
         if (type != StructureType.VILLAGE) {
             return StructureGeometry.unavailable(HEIGHT_AT_PLACEMENT);
         }
@@ -149,25 +155,50 @@ public final class StructureGeometryGenerator {
             }
             // This version computes no generation point. The start's own box is inflated by 12 for
             // the beard, so the pieces are measured directly instead.
-            int minX = Integer.MAX_VALUE;
-            int minY = Integer.MAX_VALUE;
-            int minZ = Integer.MAX_VALUE;
-            int maxX = Integer.MIN_VALUE;
-            int maxY = Integer.MIN_VALUE;
-            int maxZ = Integer.MIN_VALUE;
-            for (StructurePiece piece : start.getPieces()) {
-                BoundingBox box = piece.getBoundingBox();
-                minX = Math.min(minX, box.x0);
-                minY = Math.min(minY, box.y0);
-                minZ = Math.min(minZ, box.z0);
-                maxX = Math.max(maxX, box.x1);
-                maxY = Math.max(maxY, box.y1);
-                maxZ = Math.max(maxZ, box.z1);
-            }
-            return StructureGeometry.of(null,
-                    new StructureBounds(minX, minY, minZ, maxX, maxY, maxZ));
+            return StructureGeometry.of(null, piecesExtent(start));
         }
         return StructureGeometry.unavailable(NO_START);
+    }
+
+    /^*
+     * A stronghold's start, built as ChunkGenerator.createStructures builds it: the configured
+     * stronghold, the generator's own grid configuration for it, and isFeatureChunk answered by the
+     * generator's own vanilla stronghold list - computed once per worker session on first use.
+     ^/
+    private static StructureGeometry strongholdGeometry(BiomeWorldgenSession session, int chunkX,
+                                                        int chunkZ) {
+        LegacyStructureWorld world = worldFor(session);
+        OverworldBiomeSource biomeSource = session.legacyBiomeSource();
+        Biome biome = biomeSource.getNoiseBiome((chunkX << 2) + 2, 0, (chunkZ << 2) + 2);
+        StructureStart<?> start = StructureFeatures.STRONGHOLD.generate(world.registries,
+                world.chunkGenerator, biomeSource, world.templates, session.seed(),
+                new ChunkPos(chunkX, chunkZ), biome, 0,
+                BuiltinRegistries.NOISE_GENERATOR_SETTINGS.getOrThrow(NoiseGeneratorSettings.OVERWORLD)
+                        .structureSettings().getConfig(StructureFeature.STRONGHOLD));
+        if (!start.isValid()) {
+            return StructureGeometry.unavailable(NO_START);
+        }
+        return StructureGeometry.of(null, piecesExtent(start));
+    }
+
+    /^* The extent of a start's pieces, independent of whatever inflation its own box carries. ^/
+    private static StructureBounds piecesExtent(StructureStart<?> start) {
+        int minX = Integer.MAX_VALUE;
+        int minY = Integer.MAX_VALUE;
+        int minZ = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE;
+        int maxY = Integer.MIN_VALUE;
+        int maxZ = Integer.MIN_VALUE;
+        for (StructurePiece piece : start.getPieces()) {
+            BoundingBox box = piece.getBoundingBox();
+            minX = Math.min(minX, box.x0);
+            minY = Math.min(minY, box.y0);
+            minZ = Math.min(minZ, box.z0);
+            maxX = Math.max(maxX, box.x1);
+            maxY = Math.max(maxY, box.y1);
+            maxZ = Math.max(maxZ, box.z1);
+        }
+        return new StructureBounds(minX, minY, minZ, maxX, maxY, maxZ);
     }
 
     private static final class LegacyStructureWorld {

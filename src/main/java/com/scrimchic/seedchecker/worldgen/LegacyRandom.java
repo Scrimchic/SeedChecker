@@ -52,6 +52,19 @@ public final class LegacyRandom {
         }
     }
 
+    /**
+     * {@code java.util.Random.nextDouble()}: 53 bits from two draws, 26 and 27, scaled by 2^-53.
+     * {@code LegacyRandomSource} inherits the identical expression from {@code BitRandomSource}.
+     */
+    public double nextDouble() {
+        return (((long) next(26) << 27) + next(27)) * 0x1.0p-53;
+    }
+
+    /** {@code java.util.Random.nextLong()}: two 32-bit draws, the second sign extended. */
+    public long nextLong() {
+        return ((long) next(32) << 32) + next(32);
+    }
+
     private int next(int bits) {
         state = (state * MULTIPLIER + ADDEND) & MASK;
         return (int) (state >>> (48 - bits));
