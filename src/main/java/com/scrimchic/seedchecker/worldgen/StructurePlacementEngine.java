@@ -7,11 +7,11 @@ import com.scrimchic.seedchecker.core.map.ChunkRange;
  *
  * <h2>What a result means</h2>
  *
- * <p>A result is a <em>candidate</em>: the chunk vanilla's grid placement picked for that region.
- * It is not a promise that a structure generates there. Vanilla then checks the biome at the start
+ * <p>A result is a <em>candidate</em>: a chunk vanilla's placement lets the structure set try. It
+ * is not a promise that a structure generates there. Vanilla then checks the biome at the start
  * position, sometimes the terrain height, and for jigsaw structures consults a template manager -
- * none of which happens here. Roughly speaking every real structure of that type is at a candidate
- * chunk, but not every candidate chunk holds a structure.
+ * none of which happens here. Every real structure of that type is at a candidate chunk, but not
+ * every candidate chunk holds a structure.
  *
  * <h2>The algorithm</h2>
  *
@@ -28,6 +28,11 @@ import com.scrimchic.seedchecker.core.map.ChunkRange;
  * candidate = (regionX * spacing + offsetX, regionZ * spacing + offsetZ)
  * </pre>
  *
+ * <p>and then {@code StructurePlacement.isStructureChunk}'s two restrictions on that chunk, for the
+ * sets that have them: the {@link FrequencyReduction} when the frequency is below 1, and the
+ * {@link ExclusionZone}. A chunk that fails either is not a candidate at all - vanilla never lets
+ * the set try it - so it is never reported, not even as a rejected one.
+ *
  * <p>{@code floorDiv} rather than {@code /} is what makes negative coordinates work: integer
  * division truncates towards zero, which would fold chunk -1 and chunk 0 into the same region and
  * shift every structure west and north of the origin.
@@ -39,20 +44,18 @@ import com.scrimchic.seedchecker.core.map.ChunkRange;
  *
  * <p>{@link #forEachCandidate} walks <em>regions</em>, not chunks, so its cost scales with the
  * number of structure regions on screen rather than the number of chunks - at spacing 32 that is
- * one thousandth of the work.
+ * one thousandth of the work. A set of spacing 1 (buried treasure, mineshaft) has one region per
+ * chunk, and every one of them pays for its frequency draw.
  *
  * <p>Instances carry a reusable generator and are <strong>not thread safe</strong>; give each
  * scanning thread its own.
  */
 public final class StructurePlacementEngine {
 
-    private static final long REGION_X_MULTIPLIER = 341873128712L;
-    private static final long REGION_Z_MULTIPLIER = 132897987541L;
-
     private final LegacyRandom random = new LegacyRandom();
 
     /**
-     * The candidate chunk for one structure region.
+     * The chunk grid placement picks for one structure region, before any restriction.
      *
      * @return the chunk packed as {@code (chunkX << 32) | (chunkZ & 0xFFFFFFFF)}; read it with
      *         {@link #chunkX(long)} and {@link #chunkZ(long)}. Packed rather than boxed so a scan
@@ -60,10 +63,7 @@ public final class StructurePlacementEngine {
      */
     public long candidateChunk(long worldSeed, StructurePlacementConfig config,
                                int regionX, int regionZ) {
-        random.setSeed(regionX * REGION_X_MULTIPLIER
-                + regionZ * REGION_Z_MULTIPLIER
-                + worldSeed
-                + config.salt());
+        random.setLargeFeatureWithSalt(worldSeed, regionX, regionZ, config.salt());
 
         int range = config.offsetRange();
         SpreadType spread = config.spreadType();
@@ -73,7 +73,69 @@ public final class StructurePlacementEngine {
     }
 
     /**
-     * Visits every candidate chunk inside {@code area}.
+     * {@code StructurePlacement.isStructureChunk}: whether vanilla lets this set try that chunk at
+     * all - grid placement picked it, and no restriction refused it.
+     */
+    public boolean isStructureChunk(long worldSeed, StructurePlacementConfig config,
+                                    int chunkX, int chunkZ) {
+        int spacing = config.spacing();
+        long candidate = candidateChunk(worldSeed, config,
+                Math.floorDiv(chunkX, spacing), Math.floorDiv(chunkZ, spacing));
+        return chunkX(candidate) == chunkX && chunkZ(candidate) == chunkZ
+                && passesRestrictions(worldSeed, config, chunkX, chunkZ);
+    }
+
+    /**
+     * The restrictions alone, for a chunk grid placement already picked: the frequency reduction,
+     * then the exclusion zone, in vanilla's order. Both are pure conditions, so the order only
+     * matters for cost.
+     */
+    public boolean passesRestrictions(long worldSeed, StructurePlacementConfig config,
+                                      int chunkX, int chunkZ) {
+        if (config.frequency() < 1.0F && !config.frequencyReduction().keeps(random, worldSeed,
+                config.salt(), chunkX, chunkZ, config.frequency())) {
+            return false;
+        }
+        ExclusionZone zone = config.exclusionZone();
+        return zone == null
+                || !hasStructureChunkInRange(worldSeed, zone.other(), chunkX, chunkZ,
+                        zone.chunkCount());
+    }
+
+    /**
+     * {@code ChunkGeneratorStructureState.hasStructureChunkInRange}: whether the set has a
+     * structure chunk within {@code range} chunks of that one on both axes.
+     *
+     * <p>Vanilla asks {@code isStructureChunk} of every chunk in the square. Only the chunk grid
+     * placement picked for its region can answer yes, so walking the regions that overlap the square
+     * and testing their candidates is the same question at a fraction of the cost.
+     */
+    public boolean hasStructureChunkInRange(long worldSeed, StructurePlacementConfig config,
+                                            int chunkX, int chunkZ, int range) {
+        int minX = chunkX - range;
+        int maxX = chunkX + range;
+        int minZ = chunkZ - range;
+        int maxZ = chunkZ + range;
+        int spacing = config.spacing();
+        for (int regionX = Math.floorDiv(minX, spacing); regionX <= Math.floorDiv(maxX, spacing);
+                regionX++) {
+            for (int regionZ = Math.floorDiv(minZ, spacing);
+                    regionZ <= Math.floorDiv(maxZ, spacing); regionZ++) {
+                long candidate = candidateChunk(worldSeed, config, regionX, regionZ);
+                int x = chunkX(candidate);
+                int z = chunkZ(candidate);
+                if (x >= minX && x <= maxX && z >= minZ && z <= maxZ
+                        && passesRestrictions(worldSeed, config, x, z)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Visits every candidate chunk inside {@code area}: every structure chunk, restrictions
+     * applied.
      *
      * @param maxCandidates stop after this many, as a guard against absurd viewports
      * @return how many candidates were visited
@@ -81,6 +143,7 @@ public final class StructurePlacementEngine {
     public int forEachCandidate(long worldSeed, StructurePlacementConfig config, ChunkRange area,
                                 int maxCandidates, StructureCandidateVisitor visitor) {
         int spacing = config.spacing();
+        boolean restricted = config.hasRestrictions();
         // Every candidate sits inside its own region, so the regions overlapping the area are
         // exactly the regions that can contribute to it.
         long firstRegionX = Math.floorDiv((long) area.minChunkX(), (long) spacing);
@@ -99,6 +162,9 @@ public final class StructurePlacementEngine {
                 int chunkZ = chunkZ(candidate);
                 if (chunkX < area.minChunkX() || chunkX > area.maxChunkX()
                         || chunkZ < area.minChunkZ() || chunkZ > area.maxChunkZ()) {
+                    continue;
+                }
+                if (restricted && !passesRestrictions(worldSeed, config, chunkX, chunkZ)) {
                     continue;
                 }
                 visited++;

@@ -23,11 +23,34 @@ public final class LegacyRandom {
     private static final long ADDEND = 0xBL;
     private static final long MASK = (1L << 48) - 1L;
 
+    private static final long REGION_X_MULTIPLIER = 341873128712L;
+    private static final long REGION_Z_MULTIPLIER = 132897987541L;
+
     private long state;
 
     /** Scrambles and installs a seed, exactly as {@code new java.util.Random(seed)} would. */
     public void setSeed(long seed) {
         this.state = (seed ^ MULTIPLIER) & MASK;
+    }
+
+    /**
+     * {@code WorldgenRandom.setLargeFeatureWithSalt}, identical on all three targets: the two
+     * coordinates multiplied out in long arithmetic that is expected to wrap, plus seed and salt.
+     */
+    public void setLargeFeatureWithSalt(long worldSeed, int x, int z, int salt) {
+        setSeed((long) x * REGION_X_MULTIPLIER + (long) z * REGION_Z_MULTIPLIER + worldSeed
+                + (long) salt);
+    }
+
+    /**
+     * {@code WorldgenRandom.setLargeFeatureSeed}, identical on all three targets: seed, draw two
+     * longs, then reseed with {@code x * a ^ z * b ^ seed}.
+     */
+    public void setLargeFeatureSeed(long worldSeed, int x, int z) {
+        setSeed(worldSeed);
+        long a = nextLong();
+        long b = nextLong();
+        setSeed((long) x * a ^ (long) z * b ^ worldSeed);
     }
 
     /**
@@ -50,6 +73,19 @@ public final class LegacyRandom {
                 return value;
             }
         }
+    }
+
+    /** {@code java.util.Random.nextInt()}: one full 32-bit draw. */
+    public int nextInt() {
+        return next(32);
+    }
+
+    /**
+     * {@code java.util.Random.nextFloat()}, and {@code BitRandomSource.nextFloat()}: 24 bits scaled
+     * by 2^-24, the constant vanilla spells {@code 5.9604645E-8f}.
+     */
+    public float nextFloat() {
+        return next(24) * 0x1.0p-24f;
     }
 
     /**

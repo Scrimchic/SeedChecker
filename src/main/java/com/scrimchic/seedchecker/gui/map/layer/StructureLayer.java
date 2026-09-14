@@ -22,7 +22,8 @@ import com.scrimchic.seedchecker.worldgen.biome.BiomeMapKey;
  * other, because the map is allowed to show a structure that will not generate and is not allowed
  * to hide one that will. Where the check reproduced vanilla exactly, the marker is drawn at the
  * exact generation point rather than at the chunk centre; a non-exact one (the shipwreck) is still
- * a candidate. Exclusion zones between structure sets are not modelled by either.
+ * a candidate. Frequency reductions and exclusion zones are placement, so a chunk they refuse never
+ * becomes a candidate here in the first place.
  *
  * <p>Validation is asynchronous, so a marker appears once its answer arrives rather than blocking
  * the frame. A candidate still waiting for its answer is invisible unless
@@ -36,6 +37,14 @@ public final class StructureLayer implements StructureMarkerLayer {
 
     /** Region scan budget per frame. At ~0.2 us per region this stays well under a millisecond. */
     private static final long MAX_REGIONS = 2048L;
+
+    /**
+     * The budget for a set of spacing 1 - the buried treasure and the mineshaft - whose regions are
+     * single chunks. Measured at 22 to 44 ns per region with the frequency draw included, 16384 of
+     * them stay under a millisecond, and the two layers then draw a 128 by 128 chunk view rather
+     * than asking to zoom in past 45 by 45.
+     */
+    private static final long MAX_CHUNK_REGIONS = 16384L;
 
     /** Marker budget per frame, so a very wide view cannot flood the draw calls. */
     private static final int MAX_MARKERS = 1024;
@@ -97,6 +106,22 @@ public final class StructureLayer implements StructureMarkerLayer {
                 return 0xFF4FB3A5;
             case TRIAL_CHAMBER:
                 return 0xFFC8785A;
+            case JUNGLE_TEMPLE:
+                return 0xFF5FAE4E;
+            case SWAMP_HUT:
+                return 0xFF7D8F55;
+            case IGLOO:
+                return 0xFFE4F1F7;
+            case PILLAGER_OUTPOST:
+                return 0xFFB5504F;
+            case OCEAN_RUIN:
+                return 0xFF3F7FAF;
+            case BURIED_TREASURE:
+                return 0xFFF2C94C;
+            case MINESHAFT:
+                return 0xFF9C7654;
+            case TRAIL_RUINS:
+                return 0xFFC98F6B;
             default:
                 return 0xFFCCCCCC;
         }
@@ -122,7 +147,8 @@ public final class StructureLayer implements StructureMarkerLayer {
         if (!world.hasSeed()) {
             return "needs a known seed";
         }
-        if (StructurePlacementEngine.regionCount(config, visible) > MAX_REGIONS) {
+        long budget = config.spacing() == 1 ? MAX_CHUNK_REGIONS : MAX_REGIONS;
+        if (StructurePlacementEngine.regionCount(config, visible) > budget) {
             return "zoom in";
         }
         return null;
@@ -261,13 +287,9 @@ public final class StructureLayer implements StructureMarkerLayer {
                 StructureValidationKey.mapKeyFor(world), type, chunkX, chunkZ));
     }
 
-    /** Whether grid placement picked exactly this chunk for its region. */
+    /** Whether vanilla lets this set try exactly this chunk: grid placement and restrictions. */
     private boolean isCandidate(long seed, int chunkX, int chunkZ) {
-        int spacing = config.spacing();
-        long packed = engine.candidateChunk(seed, config,
-                Math.floorDiv(chunkX, spacing), Math.floorDiv(chunkZ, spacing));
-        return StructurePlacementEngine.chunkX(packed) == chunkX
-                && StructurePlacementEngine.chunkZ(packed) == chunkZ;
+        return engine.isStructureChunk(seed, config, chunkX, chunkZ);
     }
 
     private void draw(MapCanvas canvas, MapViewport viewport, StructureValidation result,

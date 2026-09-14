@@ -17,6 +17,14 @@ public enum StructureType {
     SHIPWRECK("Shipwreck"),
     ANCIENT_CITY("Ancient City"),
     TRIAL_CHAMBER("Trial Chamber"),
+    JUNGLE_TEMPLE("Jungle Temple"),
+    SWAMP_HUT("Swamp Hut"),
+    IGLOO("Igloo"),
+    PILLAGER_OUTPOST("Pillager Outpost"),
+    OCEAN_RUIN("Ocean Ruin"),
+    BURIED_TREASURE("Buried Treasure"),
+    MINESHAFT("Mineshaft"),
+    TRAIL_RUINS("Trail Ruins"),
 
     /** Not grid placed; never in {@link StructurePlacements}. */
     STRONGHOLD("Stronghold");

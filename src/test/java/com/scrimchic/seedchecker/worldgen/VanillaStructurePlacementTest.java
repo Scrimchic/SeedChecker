@@ -13,7 +13,11 @@ import net.minecraft.server.Bootstrap;
 import net.minecraft.world.level.ChunkPos;
 
 //? if >=1.18 {
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+
 import net.minecraft.SharedConstants;
+import net.minecraft.core.Holder;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.data.registries.VanillaRegistries;
@@ -21,11 +25,27 @@ import net.minecraft.world.level.levelgen.structure.BuiltinStructureSets;
 import net.minecraft.world.level.levelgen.structure.StructureSet;
 import net.minecraft.world.level.levelgen.structure.placement.RandomSpreadStructurePlacement;
 import net.minecraft.world.level.levelgen.structure.placement.StructurePlacement;
+import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
 import net.minecraft.resources.ResourceKey;
 //?} else {
-/*import net.minecraft.world.level.levelgen.StructureSettings;
+/*import java.lang.reflect.Method;
+import java.util.HashMap;
+import java.util.Map;
+
+import net.minecraft.data.BuiltinRegistries;
+import net.minecraft.data.worldgen.StructureFeatures;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.biome.BiomeSource;
+import net.minecraft.world.level.biome.OverworldBiomeSource;
+import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
+import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
+import net.minecraft.world.level.levelgen.StructureSettings;
 import net.minecraft.world.level.levelgen.WorldgenRandom;
 import net.minecraft.world.level.levelgen.feature.StructureFeature;
+import net.minecraft.world.level.levelgen.feature.configurations.FeatureConfiguration;
+import net.minecraft.world.level.levelgen.feature.configurations.MineshaftConfiguration;
+import net.minecraft.world.level.levelgen.feature.configurations.ProbabilityFeatureConfiguration;
 import net.minecraft.world.level.levelgen.feature.configurations.StructureFeatureConfiguration;*/
 //?}
 
@@ -50,7 +70,11 @@ import net.minecraft.world.level.levelgen.feature.configurations.StructureFeatur
  * what lets the comparison run on 26.2 as well, where the worldgen spike found the higher-level
  * structure-state API unusable without bound biome tags.
  *
- * <p>Limit of this verification, stated honestly: it covers <em>grid placement</em> only. It says
+ * <p>Phase 3H-1 adds the restrictions: the frequency reductions and the exclusion zone, compared
+ * chunk by chunk against vanilla's own {@code StructurePlacement.isStructureChunk} from 1.18 and
+ * against {@code getPotentialFeatureChunk} followed by the {@code isFeatureChunk} override on 1.16.5.
+ *
+ * <p>Limit of this verification, stated honestly: it covers <em>placement</em> only. It says
  * nothing about whether a structure passes vanilla's later biome and terrain checks.
  */
 class VanillaStructurePlacementTest {
@@ -143,6 +167,77 @@ class VanillaStructurePlacementTest {
                 comparisons, "every supported structure must have been compared");
     }
 
+    /** Windows of chunks, as lower corners: the origin, region boundaries, negative and far out. */
+    private static final int[][] WINDOWS = {
+            {-24, -24}, {-10_000, 7_000}, {999_980, -1_000_020}, {-1_875_000, 1_874_960},
+    };
+
+    private static final int WINDOW_SIZE = 48;
+
+    @Test
+    void restrictionsAgreeWithVanillaChunkByChunk() throws Exception {
+        // For every set with restrictions: every chunk of several windows, and every grid chunk of a
+        // wide square of regions, asked of vanilla's own full placement decision and of the engine.
+        StructurePlacementEngine engine = new StructurePlacementEngine();
+        int restrictedTypes = 0;
+
+        for (StructureType type : placements.types()) {
+            StructurePlacementConfig config = placements.get(type);
+            if (!config.hasRestrictions()) {
+                continue;
+            }
+            restrictedTypes++;
+            int compared = 0;
+            int kept = 0;
+            int refused = 0;
+            for (long seed : SEEDS) {
+                List<int[]> chunks = new ArrayList<int[]>();
+                for (int[] window : WINDOWS) {
+                    for (int dx = 0; dx < WINDOW_SIZE; dx++) {
+                        for (int dz = 0; dz < WINDOW_SIZE; dz++) {
+                            chunks.add(new int[] {window[0] + dx, window[1] + dz});
+                        }
+                    }
+                }
+                if (config.spacing() > 1) {
+                    for (int regionX = -40; regionX < 40; regionX++) {
+                        for (int regionZ = -40; regionZ < 40; regionZ++) {
+                            long packed = engine.candidateChunk(seed, config, regionX, regionZ);
+                            chunks.add(new int[] {StructurePlacementEngine.chunkX(packed),
+                                    StructurePlacementEngine.chunkZ(packed)});
+                        }
+                    }
+                }
+                for (int[] chunk : chunks) {
+                    boolean vanilla = vanillaIsStructureChunk(type, seed, chunk[0], chunk[1]);
+                    boolean ours = engine.isStructureChunk(seed, config, chunk[0], chunk[1]);
+                    assertEquals(vanilla, ours, type + " seed " + seed + " chunk "
+                            + chunk[0] + "," + chunk[1]);
+                    compared++;
+                    if (ours) {
+                        kept++;
+                    } else if (isGridChunk(engine, seed, config, chunk[0], chunk[1])) {
+                        refused++;
+                    }
+                }
+            }
+            System.out.println("restriction oracle " + type + ": " + compared + " chunks, "
+                    + kept + " structure chunks, " + refused + " grid chunks refused");
+            assertTrue(kept > 0, type + ": no chunk was kept, so acceptance was never compared");
+            assertTrue(refused > 0, type + ": no grid chunk was refused, so nothing was compared");
+        }
+        assertTrue(restrictedTypes >= 3, "expected the outpost, treasure and mineshaft, saw "
+                + restrictedTypes);
+    }
+
+    private static boolean isGridChunk(StructurePlacementEngine engine, long seed,
+                                       StructurePlacementConfig config, int chunkX, int chunkZ) {
+        long packed = engine.candidateChunk(seed, config, Math.floorDiv(chunkX, config.spacing()),
+                Math.floorDiv(chunkZ, config.spacing()));
+        return StructurePlacementEngine.chunkX(packed) == chunkX
+                && StructurePlacementEngine.chunkZ(packed) == chunkZ;
+    }
+
     /** Region boundaries on both sides of the origin, plus deliberately far-out coordinates. */
     private static List<Integer> interestingCoordinates(int spacing) {
         List<Integer> coordinates = new ArrayList<Integer>();
@@ -207,6 +302,22 @@ class VanillaStructurePlacementTest {
             case TRIAL_CHAMBER:
                 return BuiltinStructureSets.TRIAL_CHAMBERS;
             //?}
+            case JUNGLE_TEMPLE:
+                return BuiltinStructureSets.JUNGLE_TEMPLES;
+            case SWAMP_HUT:
+                return BuiltinStructureSets.SWAMP_HUTS;
+            case IGLOO:
+                return BuiltinStructureSets.IGLOOS;
+            case PILLAGER_OUTPOST:
+                return BuiltinStructureSets.PILLAGER_OUTPOSTS;
+            case OCEAN_RUIN:
+                return BuiltinStructureSets.OCEAN_RUINS;
+            case BURIED_TREASURE:
+                return BuiltinStructureSets.BURIED_TREASURES;
+            case MINESHAFT:
+                return BuiltinStructureSets.MINESHAFTS;
+            case TRAIL_RUINS:
+                return BuiltinStructureSets.TRAIL_RUINS;
             default:
                 return null;
         }
@@ -239,6 +350,68 @@ class VanillaStructurePlacementTest {
         ChunkPos pos = vanillaPlacement(type).getPotentialStructureChunk(seed, chunkX, chunkZ);
         return StructurePlacementEngine.pack(posX(pos), posZ(pos));
     }
+
+    @Test
+    void restrictionNumbersMatchVanilla() throws Exception {
+        // frequency, frequencyReductionMethod and exclusionZone are protected, so read by
+        // reflection: the same values the chunk-by-chunk comparison exercises, named.
+        for (StructureType type : placements.types()) {
+            StructurePlacementConfig ours = placements.get(type);
+            StructurePlacement placement = vanillaPlacement(type);
+            float frequency = (Float) field(StructurePlacement.class, "frequency").get(placement);
+            Object method = field(StructurePlacement.class, "frequencyReductionMethod").get(placement);
+            java.util.Optional<?> zone = (java.util.Optional<?>) field(StructurePlacement.class,
+                    "exclusionZone").get(placement);
+
+            assertEquals(frequency, ours.frequency(), type + " frequency");
+            if (frequency < 1.0F) {
+                assertEquals(((Enum<?>) method).name(), ours.frequencyReduction().name(),
+                        type + " frequency reduction");
+            }
+            assertEquals(zone.isPresent(), ours.exclusionZone() != null, type + " exclusion zone");
+            if (zone.isPresent()) {
+                Object vanillaZone = zone.get();
+                Holder<?> other = (Holder<?>) field(vanillaZone.getClass(), "otherSet").get(vanillaZone);
+                int chunkCount = (Integer) field(vanillaZone.getClass(), "chunkCount").get(vanillaZone);
+                assertEquals(setKeyOf(ours.exclusionZone().otherType()), other.unwrapKey().get(),
+                        type + " exclusion zone set");
+                assertEquals(chunkCount, ours.exclusionZone().chunkCount(), type + " exclusion reach");
+                assertEquals(placements.get(ours.exclusionZone().otherType()).toString(),
+                        ours.exclusionZone().other().toString(),
+                        type + " exclusion zone must use this version's own placement of the set");
+            }
+        }
+    }
+
+    private static Field field(Class<?> owner, String name) throws NoSuchFieldException {
+        Field field = owner.getDeclaredField(name);
+        field.setAccessible(true);
+        return field;
+    }
+
+    private static ChunkGeneratorStructureState structureState;
+    private static long structureStateSeed;
+
+    /**
+     * Vanilla's own isStructureChunk. The state is built through its private constructor: the
+     * placement decision reads nothing from it but the level seed, so no biome source or noise is
+     * needed - and none is given, so a decision that tried to read one would fail loudly.
+     */
+    private static boolean vanillaIsStructureChunk(StructureType type, long seed, int chunkX,
+                                                   int chunkZ) throws Exception {
+        if (structureState == null || structureStateSeed != seed) {
+            Constructor<ChunkGeneratorStructureState> constructor =
+                    ChunkGeneratorStructureState.class.getDeclaredConstructor(
+                            net.minecraft.world.level.levelgen.RandomState.class,
+                            net.minecraft.world.level.biome.BiomeSource.class, long.class, long.class,
+                            List.class);
+            constructor.setAccessible(true);
+            structureState = constructor.newInstance(null, null, seed, seed,
+                    new ArrayList<Object>());
+            structureStateSeed = seed;
+        }
+        return vanillaPlacement(type).isStructureChunk(structureState, chunkX, chunkZ);
+    }
     //?} else {
     /*// Built lazily rather than in a static initialiser: on 1.16.5, touching StructureSettings
     // before Bootstrap.bootStrap() has run throws from NoiseGeneratorSettings' class init.
@@ -267,6 +440,20 @@ class VanillaStructurePlacementTest {
                 return StructureFeature.DESERT_PYRAMID;
             case SHIPWRECK:
                 return StructureFeature.SHIPWRECK;
+            case JUNGLE_TEMPLE:
+                return StructureFeature.JUNGLE_TEMPLE;
+            case SWAMP_HUT:
+                return StructureFeature.SWAMP_HUT;
+            case IGLOO:
+                return StructureFeature.IGLOO;
+            case PILLAGER_OUTPOST:
+                return StructureFeature.PILLAGER_OUTPOST;
+            case OCEAN_RUIN:
+                return StructureFeature.OCEAN_RUIN;
+            case BURIED_TREASURE:
+                return StructureFeature.BURIED_TREASURE;
+            case MINESHAFT:
+                return StructureFeature.MINESHAFT;
             default:
                 return null;
         }
@@ -274,6 +461,77 @@ class VanillaStructurePlacementTest {
 
     private static boolean hasVanillaPlacement(StructureType type) {
         return vanillaFeature(type) != null;
+    }
+
+    /^*
+     * The configuration isFeatureChunk reads its probability from. Both mineshaft configurations
+     * must carry the same one, or a single frequency could not describe the set.
+     ^/
+    private static FeatureConfiguration configuredConfig(StructureType type) {
+        switch (type) {
+            case PILLAGER_OUTPOST:
+                return StructureFeatures.PILLAGER_OUTPOST.config;
+            case BURIED_TREASURE:
+                return StructureFeatures.BURIED_TREASURE.config;
+            case MINESHAFT:
+                assertEquals(((MineshaftConfiguration) StructureFeatures.MINESHAFT.config).probability,
+                        ((MineshaftConfiguration) StructureFeatures.MINESHAFT_MESA.config).probability);
+                return StructureFeatures.MINESHAFT.config;
+            default:
+                return null;
+        }
+    }
+
+    @Test
+    void restrictionProbabilitiesMatchVanilla() {
+        assertEquals(((ProbabilityFeatureConfiguration) configuredConfig(StructureType.BURIED_TREASURE))
+                .probability, placements.get(StructureType.BURIED_TREASURE).frequency());
+        assertEquals(((MineshaftConfiguration) configuredConfig(StructureType.MINESHAFT)).probability,
+                placements.get(StructureType.MINESHAFT).frequency());
+    }
+
+    private static final Map<Long, ChunkGenerator> GENERATORS = new HashMap<Long, ChunkGenerator>();
+
+    private static Method isFeatureChunk;
+
+    /^*
+     * Vanilla's own decision before any biome is consulted: getPotentialFeatureChunk, then the
+     * feature's isFeatureChunk override, exactly as StructureFeature.generate calls them. The
+     * outpost's reads the generator's village settings, so a real generator is given; the biome and
+     * the random are not read by any of the three.
+     ^/
+    private static boolean vanillaIsStructureChunk(StructureType type, long seed, int chunkX,
+                                                   int chunkZ) throws Exception {
+        StructureFeature<?> feature = vanillaFeature(type);
+        StructureFeatureConfiguration config = legacySettings().getConfig(feature);
+        ChunkPos potential = feature.getPotentialFeatureChunk(config, seed, legacyRandom(), chunkX,
+                chunkZ);
+        if (posX(potential) != chunkX || posZ(potential) != chunkZ) {
+            return false;
+        }
+        ChunkGenerator generator = GENERATORS.get(seed);
+        if (generator == null) {
+            final NoiseGeneratorSettings settings = BuiltinRegistries.NOISE_GENERATOR_SETTINGS
+                    .getOrThrow(NoiseGeneratorSettings.OVERWORLD);
+            generator = new NoiseBasedChunkGenerator(
+                    new OverworldBiomeSource(seed, false, false, BuiltinRegistries.BIOME), seed,
+                    () -> settings);
+            GENERATORS.put(seed, generator);
+        }
+        if (isFeatureChunk == null) {
+            isFeatureChunk = StructureFeature.class.getDeclaredMethod("isFeatureChunk",
+                    ChunkGenerator.class, BiomeSource.class, long.class, WorldgenRandom.class,
+                    int.class, int.class, Biome.class, ChunkPos.class, FeatureConfiguration.class);
+            isFeatureChunk.setAccessible(true);
+        }
+        FeatureConfiguration configured = configuredConfig(type);
+        if (configured == null) {
+            // No override to call: the base implementation is "return true", which the validator
+            // test asserts of every unrestricted structure.
+            return true;
+        }
+        return (Boolean) isFeatureChunk.invoke(feature, generator, generator.getBiomeSource(), seed,
+                new WorldgenRandom(), chunkX, chunkZ, null, potential, configured);
     }
 
     private static int[] vanillaNumbers(StructureType type) {

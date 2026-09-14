@@ -57,12 +57,14 @@ import net.minecraft.world.level.levelgen.feature.StructureFeature;*/
  * <p>So the whole question is where the stub sits, and that splits the supported structures in
  * three - {@link Position}.
  *
- * <p><strong>Exact position: the desert pyramid.</strong> {@code SinglePieceStructure} anchors on
- * {@code Structure.onTopOfChunkCenter}, so the column is {@code ChunkPos.getMiddleBlockX/Z} and the
- * height is {@code getFirstOccupiedHeight(WORLD_SURFACE_WG)}, which this session can compute.
- * {@code findGenerationPoint} additionally refuses the structure outright when the lowest of four
- * corner heights falls below sea level - a condition no amount of biome enumeration models. Both
- * halves are reproduced, so both {@code COMPATIBLE} and {@code INCOMPATIBLE} are exact.
+ * <p><strong>Exact position: the surface structures.</strong> The desert pyramid and the jungle
+ * temple ({@code SinglePieceStructure}), the igloo and the swamp hut all anchor on
+ * {@code Structure.onTopOfChunkCenter} over {@code WORLD_SURFACE_WG}, so the column is
+ * {@code ChunkPos.getMiddleBlockX/Z} and the height is {@code getFirstOccupiedHeight}, which this
+ * session can compute. The two single pieces' {@code findGenerationPoint} additionally refuses the
+ * structure outright when the lowest of four footprint corner heights falls below sea level - a
+ * condition no amount of biome enumeration models. Both halves are reproduced, so both
+ * {@code COMPATIBLE} and {@code INCOMPATIBLE} are exact.
  *
  * <p><strong>Known column, bounded height: the shipwreck.</strong>
  * {@code ShipwreckStructure.findGenerationPoint} also ends in {@code onTopOfChunkCenter}, so the
@@ -73,7 +75,9 @@ import net.minecraft.world.level.levelgen.feature.StructureFeature;*/
  * its minimum, so the stub height never leaves the range
  * {@link BiomeWorldgenSession#lowestQuartY()} to {@link BiomeWorldgenSession#highestQuartY()}
  * covers. That range is enumerated, every quart row of it. If no row is accepted then no terrain
- * can produce one, so a rejection is still proof; an acceptance is a superset.
+ * can produce one, so a rejection is still proof; an acceptance is a superset. The ocean ruins and
+ * the buried treasure anchor on the same column over {@code OCEAN_FLOOR_WG} and are bounded the
+ * same way.
  *
  * <p><strong>Exact position through vanilla: the jigsaws.</strong> {@code JigsawStructure}
  * (village, ancient city, trial chamber) hands the stub to {@code JigsawPlacement.addPieces}, and
@@ -84,6 +88,18 @@ import net.minecraft.world.level.levelgen.feature.StructureFeature;*/
  * ({@link VanillaStructureData}), and only the biome test at the point it returns is ours - the same
  * verified sets as everywhere else, so 1.20.1 and 26.2 answer alike. A multi-entry set is tried in
  * vanilla's own weighted order, so the variant and the point reported are the ones vanilla builds.
+ *
+ * <p>The mineshaft goes the same way though it is no jigsaw: its stub sits at the chunk's middle X,
+ * minimum Z and a height its own pieces decide - moved below sea level at random, or for the
+ * badlands variant onto the terrain - and its {@code findGenerationPoint} dereferences no biome tag,
+ * so the loaded data pack answers it on 1.20.1 exactly as on 26.2.
+ *
+ * <h2>Placement comes first</h2>
+ *
+ * <p>Frequency reductions and exclusion zones are placement, not validation:
+ * {@code StructurePlacementEngine} never offers a chunk they refuse, so this class is only ever
+ * asked about chunks vanilla really lets the set try, and on 1.16.5 about chunks whose
+ * {@code isFeatureChunk} override already said yes.
  *
  * <p>Two things this relies on, both read in the bytecode of 1.20.1 and 26.2 and both checked
  * against vanilla's {@code Structure.generate} in {@code StructureBiomeValidatorTest}: vanilla
@@ -208,7 +224,8 @@ public final class StructureBiomeValidator {
         COLUMN,
 
         /**
-         * Exact, through vanilla's own jigsaw assembly over the loaded data pack.
+         * Exact, through vanilla's own {@code findValidGenerationPoint} over the loaded data pack:
+         * every jigsaw, and the mineshaft.
          *
          * <p>Decides both ways like {@link #EXACT}, but needs {@link VanillaStructureData}, so a
          * check can come back pending while that loads.
@@ -238,8 +255,14 @@ public final class StructureBiomeValidator {
         /** Why the position is {@link Position#UNKNOWN}, or {@code null} for every other one. */
         private final String undecidable;
 
+        /**
+         * For an {@link Position#EXACT} entry, the width and depth whose corners must reach sea
+         * level, or an empty array when the structure has no such condition; {@code null} otherwise.
+         */
+        private final int[] footprint;
+
         Entry(String name, String structureId, String biomeTag, int weight, Set<String> biomeIds,
-              Position position, String undecidable) {
+              Position position, String undecidable, int[] footprint) {
             this.name = name;
             this.structureId = structureId;
             this.biomeTag = biomeTag;
@@ -247,6 +270,7 @@ public final class StructureBiomeValidator {
             this.biomeIds = biomeIds;
             this.position = position;
             this.undecidable = undecidable;
+            this.footprint = footprint;
         }
     }
 
@@ -320,16 +344,30 @@ public final class StructureBiomeValidator {
     // ------------------------------------------------------- version-specific data
 
     //? if >=1.18 {
+    private static final int[] NO_FOOTPRINT = new int[0];
+
     /**
-     * The one structure type whose whole generation point is reproduced exactly.
+     * The structure types whose whole generation point is reproduced here, keyed to the footprint
+     * whose corners must reach sea level, or to no footprint.
      *
-     * <p>{@code SinglePieceStructure.findGenerationPoint} is short and entirely computable:
-     * reject unless the lowest of four corner heights reaches sea level, then anchor on the chunk
-     * centre at {@code getFirstOccupiedHeight(WORLD_SURFACE_WG)}. Both halves are reproduced in
-     * {@link #exactlySampledBiome}, and the result is checked against vanilla's own
-     * {@code findValidGenerationPoint} in {@code StructureBiomeValidatorTest}.
+     * <p>{@code SinglePieceStructure.findGenerationPoint} - the desert pyramid at 21 by 21 and the
+     * jungle temple at 12 by 15, from their calls to super - rejects unless the lowest of four
+     * corner heights reaches sea level, then anchors on the chunk centre at
+     * {@code getFirstOccupiedHeight(WORLD_SURFACE_WG)}; {@code IglooStructure} and
+     * {@code SwampHutStructure} do only the second half. Reproduced in {@link #exactlySampledBiome},
+     * and checked against vanilla's own {@code findValidGenerationPoint} in
+     * {@code StructureBiomeValidatorTest}.
      */
-    private static final String EXACT_SINGLE_PIECE = "minecraft:desert_pyramid";
+    private static final Map<String, int[]> SURFACE_ANCHORED = surfaceAnchored();
+
+    private static Map<String, int[]> surfaceAnchored() {
+        Map<String, int[]> anchored = new HashMap<String, int[]>();
+        anchored.put("minecraft:desert_pyramid", new int[] {21, 21});
+        anchored.put("minecraft:jungle_temple", new int[] {12, 15});
+        anchored.put("minecraft:igloo", NO_FOOTPRINT);
+        anchored.put("minecraft:swamp_hut", NO_FOOTPRINT);
+        return Collections.unmodifiableMap(anchored);
+    }
 
     /**
      * Structure types whose stub sits on the candidate chunk's own centre column, but whose height
@@ -341,9 +379,23 @@ public final class StructureBiomeValidator {
      * exact path cost three to five times as much and rejected not one additional candidate,
      * because an ocean column carries an ocean biome at every height the enumeration visits. The
      * cheaper superset is kept until a reusable heightmap makes the exact one free.
+     *
+     * <p>{@code OceanRuinStructure} and {@code BuriedTreasureStructure} anchor the same way on
+     * {@code OCEAN_FLOOR_WG} and stay in the same superset, for the same reason.
      */
-    private static final Set<String> CHUNK_CENTRE_COLUMN =
-            new HashSet<String>(java.util.Arrays.asList("minecraft:shipwreck"));
+    private static final Set<String> CHUNK_CENTRE_COLUMN = new HashSet<String>(java.util.Arrays.asList(
+            "minecraft:shipwreck", "minecraft:ocean_ruin", "minecraft:buried_treasure"));
+
+    /**
+     * Structure types that are not jigsaws but whose generation point is still vanilla's own,
+     * through the same loaded data pack.
+     *
+     * <p>{@code MineshaftStructure.findGenerationPoint} assembles every piece to decide the stub's
+     * height, and for the badlands variant samples the terrain as well. None of it reads a biome
+     * tag, which is what makes it safe on 1.20.1's unbound registries.
+     */
+    private static final Set<String> VANILLA_GENERATION_POINT =
+            new HashSet<String>(java.util.Arrays.asList("minecraft:mineshaft"));
 
     private static final String EMPTY_JIGSAW_REASON =
             "a jigsaw of size 0 hands no pieces to its structure start";
@@ -361,10 +413,6 @@ public final class StructureBiomeValidator {
     private static final String UNVERIFIED_REASON =
             "the position this structure type generates at has not been verified";
 
-    /** The desert pyramid's footprint, from {@code DesertPyramidStructure}'s call to super. */
-    private static final int SINGLE_PIECE_WIDTH = 21;
-    private static final int SINGLE_PIECE_DEPTH = 21;
-
     private static final String BELOW_SEA_LEVEL = "lowest corner is below sea level";
 
     /** Structure set path in the vanilla datapack, per structure type. */
@@ -380,17 +428,36 @@ public final class StructureBiomeValidator {
                 return "ancient_cities";
             case TRIAL_CHAMBER:
                 return "trial_chambers";
+            case JUNGLE_TEMPLE:
+                return "jungle_temples";
+            case SWAMP_HUT:
+                return "swamp_huts";
+            case IGLOO:
+                return "igloos";
+            case PILLAGER_OUTPOST:
+                return "pillager_outposts";
+            case OCEAN_RUIN:
+                return "ocean_ruins";
+            case BURIED_TREASURE:
+                return "buried_treasures";
+            case MINESHAFT:
+                return "mineshafts";
+            case TRAIL_RUINS:
+                return "trail_ruins";
             default:
                 return null;
         }
     }
 
     private static Position positionOf(String structureTypeId, int jigsawSize) {
-        if (EXACT_SINGLE_PIECE.equals(structureTypeId)) {
+        if (SURFACE_ANCHORED.containsKey(structureTypeId)) {
             return Position.EXACT;
         }
         if ("minecraft:jigsaw".equals(structureTypeId)) {
             return jigsawSize > 0 ? Position.JIGSAW : Position.UNKNOWN;
+        }
+        if (VANILLA_GENERATION_POINT.contains(structureTypeId)) {
+            return Position.JIGSAW;
         }
         return CHUNK_CENTRE_COLUMN.contains(structureTypeId) ? Position.COLUMN : Position.UNKNOWN;
     }
@@ -571,7 +638,8 @@ public final class StructureBiomeValidator {
     }
 
     /**
-     * Reproduces {@code SinglePieceStructure.findGenerationPoint} followed by
+     * Reproduces {@code SinglePieceStructure.findGenerationPoint}, or for a structure with no
+     * footprint the {@code onTopOfChunkCenter} it ends in, followed by
      * {@code Structure.isValidBiome}, exactly.
      *
      * <p>Vanilla's condition is a conjunction - the lowest of four corner heights must reach sea
@@ -593,17 +661,21 @@ public final class StructureBiomeValidator {
             return;
         }
 
-        int minX = chunkX << 4;
-        int minZ = chunkZ << 4;
-        int lowestCorner = Math.min(
-                Math.min(session.surfaceOccupiedHeight(minX, minZ),
-                        session.surfaceOccupiedHeight(minX, minZ + SINGLE_PIECE_DEPTH)),
-                Math.min(session.surfaceOccupiedHeight(minX + SINGLE_PIECE_WIDTH, minZ),
-                        session.surfaceOccupiedHeight(minX + SINGLE_PIECE_WIDTH,
-                                minZ + SINGLE_PIECE_DEPTH)));
-        if (lowestCorner < session.seaLevel()) {
-            match.rejectedBecause = BELOW_SEA_LEVEL;
-            return;
+        if (entry.footprint.length == 2) {
+            // Structure.getLowestY: the corners of width by depth from the chunk's minimum corner.
+            int width = entry.footprint[0];
+            int depth = entry.footprint[1];
+            int minX = chunkX << 4;
+            int minZ = chunkZ << 4;
+            int lowestCorner = Math.min(
+                    Math.min(session.surfaceOccupiedHeight(minX, minZ),
+                            session.surfaceOccupiedHeight(minX, minZ + depth)),
+                    Math.min(session.surfaceOccupiedHeight(minX + width, minZ),
+                            session.surfaceOccupiedHeight(minX + width, minZ + depth)));
+            if (lowestCorner < session.seaLevel()) {
+                match.rejectedBecause = BELOW_SEA_LEVEL;
+                return;
+            }
         }
         match.accept(entry, biomeId, new GenerationPoint(middleX, stubY, middleZ));
     }
@@ -681,7 +753,8 @@ public final class StructureBiomeValidator {
                     entries.add(new Entry(shortName(structureId), structureId, tag, weight,
                             Collections.unmodifiableSet(biomes),
                             positionOf(structureTypeId, size),
-                            undecidableReason(structureTypeId, size)));
+                            undecidableReason(structureTypeId, size),
+                            SURFACE_ANCHORED.get(structureTypeId)));
                 }
             }
             if (!entries.isEmpty()) {
@@ -810,6 +883,20 @@ public final class StructureBiomeValidator {
                 return StructureFeature.DESERT_PYRAMID;
             case SHIPWRECK:
                 return StructureFeature.SHIPWRECK;
+            case JUNGLE_TEMPLE:
+                return StructureFeature.JUNGLE_TEMPLE;
+            case SWAMP_HUT:
+                return StructureFeature.SWAMP_HUT;
+            case IGLOO:
+                return StructureFeature.IGLOO;
+            case PILLAGER_OUTPOST:
+                return StructureFeature.PILLAGER_OUTPOST;
+            case OCEAN_RUIN:
+                return StructureFeature.OCEAN_RUIN;
+            case BURIED_TREASURE:
+                return StructureFeature.BURIED_TREASURE;
+            case MINESHAFT:
+                return StructureFeature.MINESHAFT;
             default:
                 return null;
         }
@@ -870,12 +957,15 @@ public final class StructureBiomeValidator {
             // exactly one entry and no variant to report.
             //
             // The position is EXACT for all of them, and Phase 3E-2b proved that claim end to end:
-            // the sampled position is a literal, isFeatureChunk is vanilla's "return true" for
-            // each of the three, and every generatePieces adds its first piece unconditionally, so
-            // an accepted biome really does mean the structure generates.
+            // the sampled position is a literal, and every generatePieces adds its first piece
+            // unconditionally, so an accepted biome really does mean the structure generates.
+            // isFeatureChunk is vanilla's "return true" for all but the pillager outpost, the
+            // buried treasure and the mineshaft, whose overrides are pure placement and are applied
+            // by StructurePlacementEngine before a chunk is ever offered here.
             loaded.put(entry.getKey(), Collections.singletonList(
                     new Entry(null, null, null, 1,
-                            Collections.unmodifiableSet(entry.getValue()), Position.EXACT, null)));
+                            Collections.unmodifiableSet(entry.getValue()), Position.EXACT, null,
+                            null)));
         }
         return loaded;
     }

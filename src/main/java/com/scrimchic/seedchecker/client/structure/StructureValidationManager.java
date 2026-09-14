@@ -25,8 +25,11 @@ import com.scrimchic.seedchecker.worldgen.biome.BiomeMapKey;
  */
 public final class StructureValidationManager {
 
-    /** A few screenfuls of candidates across every structure type. */
-    private static final int MAX_CACHED_RESULTS = 4096;
+    /**
+     * A few screenfuls of candidates across every structure type - thirteen grid types on 26.2
+     * since Phase 3H-1. A result is a few small objects, so this is a few megabytes at most.
+     */
+    private static final int MAX_CACHED_RESULTS = 16384;
 
     /** Queue bound, so a sudden pan cannot enqueue thousands of checks. */
     private static final int MAX_PENDING = 256;

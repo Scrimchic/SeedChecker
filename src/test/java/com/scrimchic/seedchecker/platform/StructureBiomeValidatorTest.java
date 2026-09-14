@@ -14,6 +14,7 @@ import java.util.Set;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.worldgen.StructurePlacementConfig;
 import com.scrimchic.seedchecker.worldgen.StructurePlacementEngine;
 import com.scrimchic.seedchecker.worldgen.StructurePlacements;
@@ -267,19 +268,104 @@ class StructureBiomeValidatorTest {
     }
 
     private static List<int[]> candidates(StructurePlacementConfig config, int wanted, long seed) {
+        return candidatesAround(config, wanted, seed, 0, 0);
+    }
+
+    /**
+     * Structure chunks - grid placement with the set's restrictions applied, so exactly the chunks
+     * vanilla lets the set try - from a square of regions around a chunk, widened until enough are
+     * found. For a set with no restrictions this is the first square, as it always was.
+     */
+    private static List<int[]> candidatesAround(StructurePlacementConfig config, int wanted, long seed,
+                                                int originChunkX, int originChunkZ) {
         StructurePlacementEngine engine = new StructurePlacementEngine();
+        int originRegionX = Math.floorDiv(originChunkX, config.spacing());
+        int originRegionZ = Math.floorDiv(originChunkZ, config.spacing());
         int side = (int) Math.ceil(Math.sqrt(wanted));
-        List<int[]> found = new ArrayList<int[]>();
-        for (int regionZ = -side / 2; regionZ <= side / 2 && found.size() < wanted; regionZ++) {
-            for (int regionX = -side / 2; regionX <= side / 2 && found.size() < wanted; regionX++) {
-                long packed = engine.candidateChunk(seed, config, regionX, regionZ);
-                found.add(new int[] {
-                        StructurePlacementEngine.chunkX(packed),
-                        StructurePlacementEngine.chunkZ(packed),
-                });
+        while (true) {
+            List<int[]> found = new ArrayList<int[]>();
+            for (int dz = -side / 2; dz <= side / 2 && found.size() < wanted; dz++) {
+                for (int dx = -side / 2; dx <= side / 2 && found.size() < wanted; dx++) {
+                    long packed = engine.candidateChunk(seed, config, originRegionX + dx,
+                            originRegionZ + dz);
+                    int chunkX = StructurePlacementEngine.chunkX(packed);
+                    int chunkZ = StructurePlacementEngine.chunkZ(packed);
+                    if (engine.passesRestrictions(seed, config, chunkX, chunkZ)) {
+                        found.add(new int[] {chunkX, chunkZ});
+                    }
+                }
             }
+            if (found.size() >= wanted || side > 8192) {
+                return found;
+            }
+            side *= 2;
         }
-        return found;
+    }
+
+    // ----------------------------------------------- Phase 3H-1, shared by both oracles
+
+    /** The seeds every Phase 3H-1 structure is compared on: the edges of the seed space. */
+    private static final long[] EDGE_SEEDS = {0L, 1L, -1L, Long.MIN_VALUE, Long.MAX_VALUE, SEED};
+
+    /** Far enough out for the long multiplications and for noise a long way from spawn. */
+    private static final int FAR_CHUNK = 1_000_000;
+
+    private static boolean isPhase3h1(StructureType type) {
+        switch (type) {
+            case JUNGLE_TEMPLE:
+            case SWAMP_HUT:
+            case IGLOO:
+            case PILLAGER_OUTPOST:
+            case OCEAN_RUIN:
+            case BURIED_TREASURE:
+            case MINESHAFT:
+            case TRAIL_RUINS:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /** Structure chunks around the origin, then around a far chunk with negative Z. */
+    private static List<int[]> oracleCandidates(StructurePlacementConfig config, int near, int far,
+                                                long seed) {
+        List<int[]> all = new ArrayList<int[]>(candidatesAround(config, near, seed, 0, 0));
+        all.addAll(candidatesAround(config, far, seed, FAR_CHUNK, -FAR_CHUNK));
+        return all;
+    }
+
+    @Test
+    void phase3h1CostAndDensityAreReported() {
+        // A measurement, printed for the phase report: how dense each new structure's candidates are,
+        // and what one validation costs on this version. Nothing is asserted beyond "found some".
+        StructurePlacementEngine engine = new StructurePlacementEngine();
+        ChunkRange area = ChunkRange.of(-256, -256, 255, 255);
+        for (StructureType type : placements.types()) {
+            if (!isPhase3h1(type)) {
+                continue;
+            }
+            StructurePlacementConfig config = placements.get(type);
+            final int[] found = {0};
+            engine.forEachCandidate(SEED, config, area, Integer.MAX_VALUE, (x, z) -> {
+                found[0]++;
+                return true;
+            });
+            List<int[]> sample = candidates(config, 40);
+            int accepted = 0;
+            long start = System.nanoTime();
+            for (int[] candidate : sample) {
+                StructureValidation result =
+                        StructureBiomeValidator.validate(session, type, candidate[0], candidate[1]);
+                if (result != null && result.isCompatible()) {
+                    accepted++;
+                }
+            }
+            double millis = (System.nanoTime() - start) / 1e6 / sample.size();
+            System.out.printf("phase 3H-1 %-16s %6.2f candidates per 10k chunks, %6.2f ms per "
+                            + "validation, %d of %d accepted%n", type, found[0] * 10000.0 / (512 * 512),
+                    millis, accepted, sample.size());
+            assertTrue(found[0] > 0, type + " has no candidate in 512 by 512 chunks");
+        }
     }
 
     // ------------------------------------------------- version-specific oracle
@@ -346,17 +432,20 @@ class StructureBiomeValidatorTest {
     }
 
     @Test
-    void everyStructureCanBeDecidedAndOnlyTheShipwreckIsNonExact() {
-        // The production semantics after Phase 3E-2, pinned: every placed structure may be
-        // rejected, every structure but the shipwreck is vanilla's exact answer, and the jigsaw
-        // ones are exactly the ones vanilla's own registry says are JigsawStructures.
+    void everyStructureCanBeDecidedAndOnlyTheOceanFloorColumnsAreNonExact() {
+        // The production semantics after Phase 3H-1, pinned: every placed structure may be
+        // rejected, every structure but the three bounded on their ocean-floor column (shipwreck,
+        // ocean ruins, buried treasure) is vanilla's exact answer, and the jigsaw ones are all on
+        // the exact path.
         HolderLookup.RegistryLookup<Structure> structures =
                 registries().lookupOrThrow(Registries.STRUCTURE);
         int jigsaws = 0;
 
         for (StructureType type : placements.types()) {
             assertTrue(StructureBiomeValidator.canDecide(type), type + " must be decidable");
-            assertEquals(type != StructureType.SHIPWRECK, StructureBiomeValidator.isExact(type),
+            boolean bounded = type == StructureType.SHIPWRECK || type == StructureType.OCEAN_RUIN
+                    || type == StructureType.BURIED_TREASURE;
+            assertEquals(!bounded, StructureBiomeValidator.isExact(type),
                     type + " exactness changed without its oracle being extended");
             for (String variant : StructureBiomeValidator.variantNames(type)) {
                 if (vanillaStructure(structures, variant) instanceof JigsawStructure) {
@@ -435,7 +524,8 @@ class StructureBiomeValidatorTest {
 
         // The terrain-exact single piece structure. The jigsaws have their own oracle below, against
         // the loaded data pack they are generated from.
-        for (StructureType type : new StructureType[] {StructureType.DESERT_PYRAMID}) {
+        for (StructureType type : new StructureType[] {StructureType.DESERT_PYRAMID,
+                StructureType.JUNGLE_TEMPLE, StructureType.IGLOO, StructureType.SWAMP_HUT}) {
             for (String variant : StructureBiomeValidator.variantNames(type)) {
                 Structure structure = vanillaStructure(
                         registries().lookupOrThrow(Registries.STRUCTURE), variant);
@@ -592,6 +682,27 @@ class StructureBiomeValidatorTest {
     /** Several seeds, so a coincidence of one world cannot pass for a guarantee. */
     private static final long[] JIGSAW_SEEDS = {SEED, 0L, 20260913L};
 
+    /** Every seed a vanilla-point oracle runs on: the Phase 3E ones and the Phase 3H-1 edges. */
+    private static final long[] ORACLE_SEEDS = {SEED, 0L, 20260913L, 1L, -1L, Long.MIN_VALUE,
+            Long.MAX_VALUE};
+
+    /** Phase 3H-1 structures run on the edge seeds, the earlier ones on the seeds they always had. */
+    private static boolean runsOn(StructureType type, long seed) {
+        long[] seeds = isPhase3h1(type) ? EDGE_SEEDS : JIGSAW_SEEDS;
+        for (long candidate : seeds) {
+            if (candidate == seed) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<int[]> vanillaPointCandidates(StructureType type, int wanted, long seed) {
+        return isPhase3h1(type)
+                ? oracleCandidates(placements.get(type), wanted, wanted / 3, seed)
+                : candidates(placements.get(type), wanted, seed);
+    }
+
     @Test
     void theEntryListIsVanillasOwnInOrderAndWeight() {
         // The weighted draw is reproduced over our parsed entry list, so that list must be the one
@@ -663,18 +774,18 @@ class StructureBiomeValidatorTest {
         int rejected = 0;
         int severalValid = 0;
 
-        for (long seed : JIGSAW_SEEDS) {
+        for (long seed : ORACLE_SEEDS) {
             BiomeWorldgenSession seedSession =
                     BiomeWorldgenSession.create(seed, BiomeWorldgenSession.OVERWORLD);
             LoadedWorld world = new LoadedWorld(seed);
 
             for (StructureType type : placements.types()) {
-                if (!isJigsawType(type)) {
+                if (!isJigsawType(type) || !runsOn(type, seed)) {
                     continue;
                 }
                 int wanted = type == StructureType.VILLAGE ? 40
                         : type == StructureType.ANCIENT_CITY ? 120 : 60;
-                for (int[] candidate : candidates(placements.get(type), wanted, seed)) {
+                for (int[] candidate : vanillaPointCandidates(type, wanted, seed)) {
                     StructureValidation ours = StructureBiomeValidator
                             .validate(seedSession, type, candidate[0], candidate[1]);
                     String where = type + " seed " + seed + " chunk "
@@ -795,18 +906,18 @@ class StructureBiomeValidatorTest {
         // adjustBoundingBox, every piece it generated must lie inside our bounds, and each of our six
         // faces must be reached by one of its pieces - so the bounds are neither short nor loose.
         int compared = 0;
-        for (long seed : JIGSAW_SEEDS) {
+        for (long seed : ORACLE_SEEDS) {
             BiomeWorldgenSession seedSession =
                     BiomeWorldgenSession.create(seed, BiomeWorldgenSession.OVERWORLD);
             LoadedWorld world = new LoadedWorld(seed);
 
             for (StructureType type : placements.types()) {
-                if (!isJigsawType(type)) {
+                if (!isJigsawType(type) || !runsOn(type, seed)) {
                     continue;
                 }
                 // A village's pieces take a second or more to assemble, and this assembles each
-                // structure twice.
-                int wanted = type == StructureType.VILLAGE ? 1 : 2;
+                // structure twice. The Phase 3H-1 ones run on twice the seeds, one each.
+                int wanted = type == StructureType.VILLAGE || isPhase3h1(type) ? 1 : 2;
                 int found = 0;
                 for (int[] candidate : candidates(placements.get(type), 600, seed)) {
                     if (found >= wanted) {
@@ -892,6 +1003,140 @@ class StructureBiomeValidatorTest {
         throw new AssertionError("no compatible shipwreck found");
     }
 
+    // ----------------------------------------- Phase 3H-1: surface and ocean-floor structures
+
+    @Test
+    void phase3h1SurfaceAndOceanFloorStructuresMatchVanillaOnEverySeed() throws Exception {
+        // For the new structures this version either reproduces itself (the surface ones) or
+        // bounds (the ocean-floor ones): vanilla's own findValidGenerationPoint per entry, in the
+        // test's own loaded world, on the edge seeds, near the origin and a million chunks out.
+        // Exact ones agree both ways and on the point, and an accepted one really builds a
+        // StructureStart; bounded ones never hide a candidate vanilla accepts, and claim no bounds.
+        StructureType[] types = {StructureType.JUNGLE_TEMPLE, StructureType.SWAMP_HUT,
+                StructureType.IGLOO, StructureType.OCEAN_RUIN, StructureType.BURIED_TREASURE};
+        java.util.Map<StructureType, int[]> tally = new java.util.LinkedHashMap<StructureType, int[]>();
+
+        for (long seed : EDGE_SEEDS) {
+            BiomeWorldgenSession seedSession =
+                    BiomeWorldgenSession.create(seed, BiomeWorldgenSession.OVERWORLD);
+            LoadedWorld world = new LoadedWorld(seed);
+            for (StructureType type : types) {
+                boolean exact = StructureBiomeValidator.isExact(type);
+                int[] counts = tally.computeIfAbsent(type, key -> new int[5]);
+                int built = 0;
+                // Swamps are a sliver of the modern overworld: 360 candidates saw none at all.
+                boolean rare = type == StructureType.SWAMP_HUT;
+                for (int[] candidate : oracleCandidates(placements.get(type), rare ? 400 : 40,
+                        rare ? 100 : 20, seed)) {
+                    String where = type + " seed " + seed + " chunk "
+                            + candidate[0] + "," + candidate[1];
+                    StructureValidation ours = StructureBiomeValidator
+                            .validate(seedSession, type, candidate[0], candidate[1]);
+                    assertNotNull(ours, where);
+
+                    List<String> valid = new ArrayList<String>();
+                    java.util.Map<String, BlockPos> stubs = new java.util.HashMap<String, BlockPos>();
+                    for (String variant : StructureBiomeValidator.variantNames(type)) {
+                        Optional<Structure.GenerationStub> stub = world.structure(variant).value()
+                                .findValidGenerationPoint(world.context(candidate[0], candidate[1],
+                                        predicateFor(type, variant)));
+                        if (stub.isPresent()) {
+                            valid.add(variant);
+                            stubs.put(variant, stub.get().position());
+                        }
+                    }
+                    counts[0]++;
+                    if (!valid.isEmpty()) {
+                        counts[1]++;
+                    }
+                    if (ours.isCompatible()) {
+                        counts[2]++;
+                    }
+
+                    if (exact) {
+                        assertEquals(!valid.isEmpty(), ours.isCompatible(), where);
+                        if (ours.isCompatible()) {
+                            assertTrue(ours.isExact(), where);
+                            assertTrue(valid.contains(ours.variant()), where + ": " + ours);
+                            assertEquals(pointOf(stubs.get(ours.variant())), ours.generationPoint(),
+                                    where + " exact generation position");
+                            if (built < 2) {
+                                assertTrue(world.generates(ours.variant(), candidate[0],
+                                        candidate[1], predicateFor(type, ours.variant())),
+                                        where + ": accepted but vanilla builds no structure start");
+                                built++;
+                                counts[3]++;
+                            }
+                        }
+                    } else {
+                        assertFalse(ours.isExact(), where);
+                        if (!valid.isEmpty()) {
+                            assertTrue(ours.isCompatible(),
+                                    where + ": vanilla generates " + valid + " but it was hidden");
+                        } else if (ours.isCompatible()) {
+                            counts[4]++;
+                        }
+                        if (ours.isCompatible() && counts[3] == 0) {
+                            assertFalse(StructureGeometryGenerator.generate(seedSession, type,
+                                    ours.variant(), candidate[0], candidate[1]).isAvailable(),
+                                    where + ": a bounded structure must claim no bounds");
+                            counts[3]++;
+                        }
+                    }
+                }
+            }
+        }
+        for (java.util.Map.Entry<StructureType, int[]> entry : tally.entrySet()) {
+            int[] counts = entry.getValue();
+            System.out.println("phase 3H-1 oracle " + entry.getKey() + ": " + counts[0]
+                    + " candidates, vanilla generates " + counts[1] + ", ours accepts " + counts[2]
+                    + (StructureBiomeValidator.isExact(entry.getKey())
+                            ? ", " + counts[3] + " built by Structure.generate"
+                            : ", " + counts[4] + " accepted that vanilla does not generate"));
+            assertTrue(counts[1] > 0, entry.getKey() + ": vanilla generated nothing, so acceptance "
+                    + "was never compared");
+            assertTrue(counts[1] < counts[0], entry.getKey() + ": nothing was rejected");
+        }
+    }
+
+    @Test
+    void phase3h1SurfaceStructuresBuildAtAPlaceholderSoClaimNoBounds() throws Exception {
+        // Why the jungle temple, the swamp hut and the igloo have no bounds: vanilla builds the
+        // first two at y 64 whatever the terrain and moves them while placing them into chunks, and
+        // the igloo's pieces are likewise moved to the heightmap in postProcess.
+        LoadedWorld world = new LoadedWorld(SEED);
+        StructureType[] types = {StructureType.JUNGLE_TEMPLE, StructureType.SWAMP_HUT,
+                StructureType.IGLOO};
+        int[] placeholders = {64, 64, Integer.MIN_VALUE};
+        for (int i = 0; i < types.length; i++) {
+            StructureType type = types[i];
+            int found = 0;
+            for (int[] candidate : candidates(placements.get(type), 6000)) {
+                if (found >= 2) {
+                    break;
+                }
+                StructureValidation validation = StructureBiomeValidator
+                        .validate(session, type, candidate[0], candidate[1]);
+                if (!validation.isCompatible()) {
+                    continue;
+                }
+                StructureGeometry geometry = StructureGeometryGenerator.generate(session, type,
+                        validation.variant(), candidate[0], candidate[1]);
+                assertFalse(geometry.isAvailable(), type + " must not claim bounds");
+                assertNotNull(geometry.unavailableReason());
+                StructureStart start = world.start(validation.variant(), candidate[0], candidate[1],
+                        predicateFor(type, validation.variant()));
+                assertTrue(start.isValid(), type + " accepted but not built");
+                if (placeholders[i] != Integer.MIN_VALUE) {
+                    assertEquals(placeholders[i], start.getBoundingBox().minY(),
+                            type + " start-time height is vanilla's placeholder");
+                }
+                found++;
+            }
+            assertEquals(2, found, "too few " + type + " found");
+        }
+    }
+
     private static void assertSameBox(BoundingBox expected, BoundingBox actual, String what) {
         assertEquals(expected.minX() + "," + expected.minY() + "," + expected.minZ() + " .. "
                         + expected.maxX() + "," + expected.maxY() + "," + expected.maxZ(),
@@ -920,9 +1165,11 @@ class StructureBiomeValidatorTest {
         }
     }
 
+    /** Every structure whose generation point production asks of vanilla: jigsaws and mineshaft. */
     private static boolean isJigsawType(StructureType type) {
         return type == StructureType.VILLAGE || type == StructureType.ANCIENT_CITY
-                || type == StructureType.TRIAL_CHAMBER;
+                || type == StructureType.TRIAL_CHAMBER || type == StructureType.PILLAGER_OUTPOST
+                || type == StructureType.TRAIL_RUINS || type == StructureType.MINESHAFT;
     }
 
     private static String setPathOf(StructureType type) {
@@ -937,6 +1184,22 @@ class StructureBiomeValidatorTest {
                 return "ancient_cities";
             case TRIAL_CHAMBER:
                 return "trial_chambers";
+            case JUNGLE_TEMPLE:
+                return "jungle_temples";
+            case SWAMP_HUT:
+                return "swamp_huts";
+            case IGLOO:
+                return "igloos";
+            case PILLAGER_OUTPOST:
+                return "pillager_outposts";
+            case OCEAN_RUIN:
+                return "ocean_ruins";
+            case BURIED_TREASURE:
+                return "buried_treasures";
+            case MINESHAFT:
+                return "mineshafts";
+            case TRAIL_RUINS:
+                return "trail_ruins";
             default:
                 throw new AssertionError(type);
         }
@@ -1057,6 +1320,20 @@ class StructureBiomeValidatorTest {
                 return StructureFeature.DESERT_PYRAMID;
             case SHIPWRECK:
                 return StructureFeature.SHIPWRECK;
+            case JUNGLE_TEMPLE:
+                return StructureFeature.JUNGLE_TEMPLE;
+            case SWAMP_HUT:
+                return StructureFeature.SWAMP_HUT;
+            case IGLOO:
+                return StructureFeature.IGLOO;
+            case PILLAGER_OUTPOST:
+                return StructureFeature.PILLAGER_OUTPOST;
+            case OCEAN_RUIN:
+                return StructureFeature.OCEAN_RUIN;
+            case BURIED_TREASURE:
+                return StructureFeature.BURIED_TREASURE;
+            case MINESHAFT:
+                return StructureFeature.MINESHAFT;
             default:
                 return null;
         }
@@ -1106,11 +1383,12 @@ class StructureBiomeValidatorTest {
     // ------------------------------------------- Phase 3E-2b: nothing follows the biome check
 
     @Test
-    void noSupportedStructureOverridesTheExtraPlacementPredicate() {
+    void onlyTheRestrictedStructuresOverrideTheExtraPlacementPredicate() {
         // StructureFeature.generate applies isFeatureChunk between grid placement and building the
         // start, and the base implementation is a plain "return true". Asked of vanilla's real
-        // class hierarchy rather than assumed: a version that introduced an override here would be
-        // introducing a predicate our biome check does not model, and must fail this.
+        // class hierarchy rather than assumed: an override is a predicate, and the only ones this
+        // version may have are the ones the placement table models as restrictions - checked chunk
+        // by chunk against the overrides themselves in VanillaStructurePlacementTest.
         for (StructureType type : placements.types()) {
             StructureFeature<?> feature = vanillaFeature(type);
             assertNotNull(feature, "no vanilla feature for " + type);
@@ -1126,8 +1404,13 @@ class StructureBiomeValidatorTest {
                     }
                 }
             }
-            assertEquals(StructureFeature.class, declaring,
-                    type + " overrides isFeatureChunk, so an unmodelled predicate now exists");
+            if (placements.get(type).hasRestrictions()) {
+                assertNotEquals(StructureFeature.class, declaring,
+                        type + " is modelled with restrictions vanilla no longer has");
+            } else {
+                assertEquals(StructureFeature.class, declaring,
+                        type + " overrides isFeatureChunk, so an unmodelled predicate now exists");
+            }
         }
     }
 
@@ -1148,7 +1431,7 @@ class StructureBiomeValidatorTest {
             StructureFeature<?> feature = vanillaFeature(type);
             assertNotNull(feature, "no vanilla feature for " + type);
 
-            for (int[] candidate : candidates(placements.get(type), 300)) {
+            for (int[] candidate : candidates(placements.get(type), isPhase3h1(type) ? 80 : 300)) {
                 boolean ours = StructureBiomeValidator
                         .validate(session, type, candidate[0], candidate[1]).isCompatible();
                 boolean vanilla = vanillaStarts(feature, candidate[0], candidate[1]);
@@ -1181,8 +1464,16 @@ class StructureBiomeValidatorTest {
     /^* The start vanilla builds there, or null when the biome does not list the feature at all. ^/
     private static StructureStart<?> vanillaStart(StructureFeature<?> feature, int chunkX,
                                                   int chunkZ) {
-        Biome biome = oracleBiomeSource().getNoiseBiome(
-                (chunkX << 2) + 2, 0, (chunkZ << 2) + 2);
+        return legacyStart(oracleBiomeSource(), oracleChunkGenerator(), SEED, feature, chunkX,
+                chunkZ);
+    }
+
+    /^* The same, in a world of any seed. ^/
+    private static StructureStart<?> legacyStart(OverworldBiomeSource biomeSource,
+                                                 ChunkGenerator generator, long seed,
+                                                 StructureFeature<?> feature, int chunkX,
+                                                 int chunkZ) {
+        Biome biome = biomeSource.getNoiseBiome((chunkX << 2) + 2, 0, (chunkZ << 2) + 2);
 
         for (java.util.function.Supplier<ConfiguredStructureFeature<?, ?>> supplier
                 : biome.getGenerationSettings().structures()) {
@@ -1192,49 +1483,150 @@ class StructureBiomeValidatorTest {
             }
             StructureFeatureConfiguration placement = StructureSettings.DEFAULTS.get(feature);
             assertNotNull(placement, "no default placement for " + feature);
-            return configured.generate(RegistryAccess.builtin(), oracleChunkGenerator(),
-                    oracleBiomeSource(), oracleTemplates(), SEED,
-                    new ChunkPos(chunkX, chunkZ), biome, 0, placement);
+            return configured.generate(RegistryAccess.builtin(), generator, biomeSource,
+                    oracleTemplates(), seed, new ChunkPos(chunkX, chunkZ), biome, 0, placement);
         }
         // Not in this biome's list at all, which is vanilla rejecting it on biome grounds.
         return null;
+    }
+
+    private static ChunkGenerator legacyGenerator(OverworldBiomeSource biomeSource, long seed) {
+        final NoiseGeneratorSettings settings = BuiltinRegistries.NOISE_GENERATOR_SETTINGS
+                .getOrThrow(NoiseGeneratorSettings.OVERWORLD);
+        return new NoiseBasedChunkGenerator(biomeSource, seed,
+                new java.util.function.Supplier<NoiseGeneratorSettings>() {
+                    @Override
+                    public NoiseGeneratorSettings get() {
+                        return settings;
+                    }
+                });
+    }
+
+    // ------------------------------------------- Phase 3H-1: the new structures, every edge seed
+
+    @Test
+    void phase3h1StructuresMatchVanillaGenerationOnEverySeed() {
+        // Vanilla's whole ConfiguredStructureFeature.generate - isFeatureChunk, pieces and isValid -
+        // against production, on the edge seeds, near the origin and a million chunks out. And the
+        // other direction for the restricted ones: grid chunks the restrictions refuse, in a biome
+        // that lists the structure, must not generate - so the restrictions are not decoration.
+        java.util.Map<StructureType, int[]> tally = new java.util.LinkedHashMap<StructureType, int[]>();
+        StructurePlacementEngine engine = new StructurePlacementEngine();
+
+        for (long seed : EDGE_SEEDS) {
+            BiomeWorldgenSession seedSession =
+                    BiomeWorldgenSession.create(seed, BiomeWorldgenSession.OVERWORLD);
+            OverworldBiomeSource biomeSource =
+                    new OverworldBiomeSource(seed, false, false, BuiltinRegistries.BIOME);
+            ChunkGenerator generator = legacyGenerator(biomeSource, seed);
+
+            for (StructureType type : placements.types()) {
+                if (!isPhase3h1(type)) {
+                    continue;
+                }
+                StructureFeature<?> feature = vanillaFeature(type);
+                StructurePlacementConfig config = placements.get(type);
+                int[] counts = tally.computeIfAbsent(type, key -> new int[3]);
+                for (int[] candidate : oracleCandidates(config, 25, 10, seed)) {
+                    boolean ours = StructureBiomeValidator
+                            .validate(seedSession, type, candidate[0], candidate[1]).isCompatible();
+                    StructureStart<?> start = legacyStart(biomeSource, generator, seed, feature,
+                            candidate[0], candidate[1]);
+                    boolean vanilla = start != null && start.isValid();
+                    assertEquals(vanilla, ours, type + " seed " + seed + " chunk "
+                            + candidate[0] + "," + candidate[1]);
+                    counts[0]++;
+                    if (vanilla) {
+                        counts[1]++;
+                    }
+                }
+                if (!config.hasRestrictions()) {
+                    continue;
+                }
+                int refused = 0;
+                for (int regionX = -60; regionX < 60 && refused < 4; regionX++) {
+                    for (int regionZ = -60; regionZ < 60 && refused < 4; regionZ++) {
+                        long packed = engine.candidateChunk(seed, config, regionX, regionZ);
+                        int x = StructurePlacementEngine.chunkX(packed);
+                        int z = StructurePlacementEngine.chunkZ(packed);
+                        if (engine.passesRestrictions(seed, config, x, z)
+                                || !biomeSource.getNoiseBiome((x << 2) + 2, 0, (z << 2) + 2)
+                                        .getGenerationSettings().isValidStart(feature)) {
+                            continue;
+                        }
+                        StructureStart<?> start = legacyStart(biomeSource, generator, seed, feature,
+                                x, z);
+                        assertFalse(start != null && start.isValid(), type + " seed " + seed
+                                + " chunk " + x + "," + z + ": refused by its restrictions, yet built");
+                        refused++;
+                        counts[2]++;
+                    }
+                }
+            }
+        }
+        for (java.util.Map.Entry<StructureType, int[]> entry : tally.entrySet()) {
+            int[] counts = entry.getValue();
+            System.out.println("phase 3H-1 oracle " + entry.getKey() + ": " + counts[0]
+                    + " candidates, " + counts[1] + " generated, " + counts[2]
+                    + " refused-by-restriction chunks confirmed empty");
+            // A refusal is compared either among the candidates or among the chunks the restrictions
+            // refused: 1.16.5 lets the mineshaft start in nearly every overworld biome, so for it
+            // the second is the only kind a run is guaranteed to meet.
+            assertTrue(counts[1] > 0 && (counts[1] < counts[0] || counts[2] > 0),
+                    entry.getKey() + ": both outcomes must be compared");
+        }
     }
 
     // ------------------------------------------- Phase 3F: exact structure geometry
 
     @Test
     void villageGeometryIsVanillasOwnStructureStart() {
-        // Production builds its own start on the session's biome source and its own template
-        // manager; the oracle is the start built here, independently, by the same vanilla call
-        // ChunkGenerator.createStructures makes.
+        startTimeGeometryIsVanillasOwnStructureStart(StructureType.VILLAGE, 3);
+    }
+
+    @Test
+    void outpostAndMineshaftGeometryIsVanillasOwnStructureStart() {
+        startTimeGeometryIsVanillasOwnStructureStart(StructureType.PILLAGER_OUTPOST, 2);
+        startTimeGeometryIsVanillasOwnStructureStart(StructureType.MINESHAFT, 2);
+    }
+
+    /^*
+     * Production builds its own start on the session's biome source and its own template manager;
+     * the oracle is the start built here, independently, by the same vanilla call
+     * ChunkGenerator.createStructures makes. A jigsaw's start is bearded - its box is the pieces'
+     * extent inflated by 12 - and the mineshaft's is plain, its box the extent itself.
+     ^/
+    private static void startTimeGeometryIsVanillasOwnStructureStart(StructureType type, int wanted) {
         int compared = 0;
-        for (int[] candidate : candidates(placements.get(StructureType.VILLAGE), 400)) {
-            if (compared >= 3) {
+        boolean bearded = type != StructureType.MINESHAFT;
+        int inflation = bearded ? 12 : 0;
+        for (int[] candidate : candidates(placements.get(type), 400)) {
+            if (compared >= wanted) {
                 break;
             }
-            if (!StructureBiomeValidator.validate(session, StructureType.VILLAGE, candidate[0],
+            if (!StructureBiomeValidator.validate(session, type, candidate[0],
                     candidate[1]).isCompatible()) {
                 continue;
             }
-            String where = "village at chunk " + candidate[0] + "," + candidate[1];
+            String where = type + " at chunk " + candidate[0] + "," + candidate[1];
             StructureGeometry ours = StructureGeometryGenerator.generate(session,
-                    StructureType.VILLAGE, null, candidate[0], candidate[1]);
+                    type, null, candidate[0], candidate[1]);
             assertTrue(ours.isAvailable(), where + ": " + ours);
 
-            StructureStart<?> start = vanillaStart(StructureFeature.VILLAGE, candidate[0],
+            StructureStart<?> start = vanillaStart(vanillaFeature(type), candidate[0],
                     candidate[1]);
             assertNotNull(start, where);
             assertTrue(start.isValid(), where);
-            // The village start is a BeardedStructureStart, whose own box is the pieces' extent
-            // inflated by 12 for the terrain beard; the bounds are the pieces' extent.
-            assertTrue(start instanceof BeardedStructureStart, where + ": expected a bearded start");
+            assertEquals(bearded, start instanceof BeardedStructureStart,
+                    where + ": start kind");
             BoundingBox box = start.getBoundingBox();
             StructureBounds bounds = ours.bounds();
             assertEquals(box.x0 + "," + box.y0 + "," + box.z0 + " .. " + box.x1 + "," + box.y1
                             + "," + box.z1,
-                    (bounds.minX() - 12) + "," + (bounds.minY() - 12) + "," + (bounds.minZ() - 12)
-                            + " .. " + (bounds.maxX() + 12) + "," + (bounds.maxY() + 12) + ","
-                            + (bounds.maxZ() + 12), where);
+                    (bounds.minX() - inflation) + "," + (bounds.minY() - inflation) + ","
+                            + (bounds.minZ() - inflation) + " .. " + (bounds.maxX() + inflation)
+                            + "," + (bounds.maxY() + inflation) + "," + (bounds.maxZ() + inflation),
+                    where);
 
             boolean[] touched = new boolean[6];
             for (StructurePiece piece : start.getPieces()) {
@@ -1254,15 +1646,19 @@ class StructureBiomeValidatorTest {
             }
             compared++;
         }
-        assertEquals(3, compared, "too few villages found");
+        assertEquals(wanted, compared, "too few " + type + " found");
     }
 
     @Test
     void structuresPlacedAtAPlaceholderHeightClaimNoBounds() {
         // Vanilla builds these at y 64 and y 90 and only moves them to the terrain while placing
         // them into generated chunks, so no bounds are claimed for either.
-        int[] placeholders = {64, 90};
-        StructureType[] types = {StructureType.DESERT_PYRAMID, StructureType.SHIPWRECK};
+        // Phase 3H-1 adds the jungle temple and swamp hut at 64, ocean ruins and buried treasure at
+        // 90, and the igloo, whose pieces reach below its placeholder so only the claim is checked.
+        int[] placeholders = {64, 90, 64, 64, 90, 90, Integer.MIN_VALUE};
+        StructureType[] types = {StructureType.DESERT_PYRAMID, StructureType.SHIPWRECK,
+                StructureType.JUNGLE_TEMPLE, StructureType.SWAMP_HUT, StructureType.OCEAN_RUIN,
+                StructureType.BURIED_TREASURE, StructureType.IGLOO};
         for (int i = 0; i < types.length; i++) {
             StructureType type = types[i];
             int checked = 0;
@@ -1278,8 +1674,10 @@ class StructureBiomeValidatorTest {
                         candidate[1]).isAvailable(), type + " must not claim bounds");
                 StructureStart<?> start = vanillaStart(vanillaFeature(type), candidate[0],
                         candidate[1]);
-                assertEquals(placeholders[i], start.getBoundingBox().y0,
-                        type + " start-time height is vanilla's placeholder");
+                if (placeholders[i] != Integer.MIN_VALUE) {
+                    assertEquals(placeholders[i], start.getBoundingBox().y0,
+                            type + " start-time height is vanilla's placeholder");
+                }
                 checked++;
             }
             assertEquals(2, checked, "too few " + type + " found");

@@ -62,15 +62,20 @@ import net.minecraft.world.level.storage.LevelStorageSource;*/
  * versions moved into {@code Structure.adjustBoundingBox} - so both versions report the same
  * thing.
  *
+ * <p>On 1.16.5 the pillager outpost (another bearded jigsaw) and the mineshaft (a plain start its
+ * own {@code generatePieces} moves below sea level) are built and measured the same way; from 1.18
+ * the outpost, the trail ruins and the mineshaft come out of their stubs like the other jigsaws.
+ *
  * <h2>Where there is no exact geometry</h2>
  *
- * <p>The desert pyramid on every version, and the shipwreck on 1.16.5, are single pieces built at a
- * placeholder height - y 64, and y 90 - that vanilla only corrects while placing them into the
- * world, from the heightmap of chunks that have already been generated
- * ({@code updateHeightPositionToLowestGroundHeight}, {@code updateAverageGroundHeight},
- * {@code WorldGenLevel.getHeight}). Their horizontal footprint is exact, their vertical extent is
- * not knowable without generating chunks, so no bounds are claimed for them. The modern shipwreck
- * is not exactly validated in the first place.
+ * <p>The desert pyramid, the jungle temple, the swamp hut and the igloo on every version, and the
+ * shipwreck, the ocean ruins and the buried treasure on 1.16.5, are built at a placeholder height -
+ * y 64 or y 90 - that vanilla only corrects while placing them into the world, from the heightmap of
+ * chunks that have already been generated ({@code updateHeightPositionToLowestGroundHeight},
+ * {@code updateAverageGroundHeight}, {@code WorldGenLevel.getHeight}). Their horizontal footprint is
+ * exact, their vertical extent is not knowable without generating chunks, so no bounds are claimed
+ * for them. The modern shipwreck, ocean ruins and buried treasure are not exactly validated in the
+ * first place.
  */
 public final class StructureGeometryGenerator {
 
@@ -104,7 +109,7 @@ public final class StructureGeometryGenerator {
                 : variant == null ? null : StructureBiomeValidator.jigsawStructureId(type, variant);
         if (structureId == null) {
             return StructureGeometry.unavailable(
-                    type == StructureType.SHIPWRECK ? NOT_EXACT : HEIGHT_AT_PLACEMENT);
+                    isBoundedOnly(type) ? NOT_EXACT : HEIGHT_AT_PLACEMENT);
         }
         LazyInit.State state = session.prepareJigsaw();
         if (state == LazyInit.State.FAILED) {
@@ -116,6 +121,12 @@ public final class StructureGeometryGenerator {
         StructureGeometry geometry = session.jigsawGeometry(structureId, chunkX, chunkZ);
         return geometry != null ? geometry : StructureGeometry.unavailable(NO_START);
     }
+
+    /** The structures validation only bounds on this version, so no start was reproduced. */
+    private static boolean isBoundedOnly(StructureType type) {
+        return type == StructureType.SHIPWRECK || type == StructureType.OCEAN_RUIN
+                || type == StructureType.BURIED_TREASURE;
+    }
     //?} else {
     /*/^* Per worker: the template manager's repository is a plain HashMap on this version. ^/
     private static final ThreadLocal<LegacyStructureWorld> WORLDS =
@@ -125,7 +136,8 @@ public final class StructureGeometryGenerator {
 
     /^*
      * Builds the start vanilla builds at that candidate and reads its bounding box. Only the
-     * village has exact geometry here; see the class comment for the other two.
+     * village, the pillager outpost, the mineshaft and the stronghold have exact geometry here; see
+     * the class comment for the others.
      *
      * @return the geometry; never {@code null} on this version, which has no data to wait for
      ^/
@@ -134,7 +146,8 @@ public final class StructureGeometryGenerator {
         if (type == StructureType.STRONGHOLD) {
             return strongholdGeometry(session, chunkX, chunkZ);
         }
-        if (type != StructureType.VILLAGE) {
+        StructureFeature<?> feature = startTimeGeometryFeature(type);
+        if (feature == null) {
             return StructureGeometry.unavailable(HEIGHT_AT_PLACEMENT);
         }
         LegacyStructureWorld world = worldFor(session);
@@ -144,20 +157,38 @@ public final class StructureGeometryGenerator {
         for (Supplier<ConfiguredStructureFeature<?, ?>> supplier
                 : biome.getGenerationSettings().structures()) {
             ConfiguredStructureFeature<?, ?> configured = supplier.get();
-            if (configured.feature != StructureFeature.VILLAGE) {
+            if (configured.feature != feature) {
                 continue;
             }
             StructureStart<?> start = configured.generate(world.registries, world.chunkGenerator,
                     biomeSource, world.templates, session.seed(), new ChunkPos(chunkX, chunkZ),
-                    biome, 0, StructureSettings.DEFAULTS.get(StructureFeature.VILLAGE));
+                    biome, 0, StructureSettings.DEFAULTS.get(feature));
             if (!start.isValid()) {
                 return StructureGeometry.unavailable(NO_START);
             }
-            // This version computes no generation point. The start's own box is inflated by 12 for
-            // the beard, so the pieces are measured directly instead.
+            // This version computes no generation point. A jigsaw start's own box is inflated by 12
+            // for the beard, so the pieces are measured directly instead.
             return StructureGeometry.of(null, piecesExtent(start));
         }
         return StructureGeometry.unavailable(NO_START);
+    }
+
+    /^*
+     * The structures whose pieces already stand at their final height once the start is built: the
+     * jigsaws, projected onto the terrain by JigsawPlacement, and the mineshaft, which its own
+     * generatePieces moves below sea level. Every other structure here waits for the chunk.
+     ^/
+    private static StructureFeature<?> startTimeGeometryFeature(StructureType type) {
+        switch (type) {
+            case VILLAGE:
+                return StructureFeature.VILLAGE;
+            case PILLAGER_OUTPOST:
+                return StructureFeature.PILLAGER_OUTPOST;
+            case MINESHAFT:
+                return StructureFeature.MINESHAFT;
+            default:
+                return null;
+        }
     }
 
     /^*
