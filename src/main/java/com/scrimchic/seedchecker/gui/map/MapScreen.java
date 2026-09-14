@@ -84,6 +84,9 @@ public final class MapScreen extends Screen {
 
     private static final int PANEL_MARGIN = 6;
 
+    /** Rows one wheel notch scrolls a panel by. */
+    private static final int PANEL_SCROLL_ROWS = 3;
+
     /** Half the player marker's size, used to cull it when it is off screen. */
     private static final int MARKER_REACH = 8;
 
@@ -131,6 +134,12 @@ public final class MapScreen extends Screen {
     /** The panels as they were last drawn, kept so a click can be matched against their rows. */
     private TextPanel contextPanel;
     private TextPanel selectionPanel;
+    private TextPanel debugPanel;
+
+    /** How far each panel is scrolled, in rows; clamped by the panel every frame. */
+    private int contextScroll;
+    private int selectionScroll;
+    private int debugScroll;
 
     /**
      * The structure candidate the developer clicked, if any.
@@ -247,20 +256,31 @@ public final class MapScreen extends Screen {
             drawPlayerMarker(canvas, player);
         }
 
-        contextPanel = buildContextPanel(world, player, visible);
-        contextPanel.draw(canvas, PANEL_MARGIN, PANEL_MARGIN, mouseX, mouseY);
+        // Both left panels share the screen's height. The debug readout is capped at a third of it
+        // and the context panel takes the rest; either scrolls rather than running off a small
+        // window, which the layer list alone would do below a GUI height of about 400.
+        debugPanel = buildDebugPanel(mouseX, mouseY);
+        debugPanel.limitHeight((this.height - PANEL_MARGIN * 3) / 3, debugScroll);
+        int debugHeight = debugPanel.height(canvas);
 
-        TextPanel debugPanel = buildDebugPanel(mouseX, mouseY);
-        debugPanel.draw(canvas, PANEL_MARGIN,
-                this.height - PANEL_MARGIN - debugPanel.height(canvas), mouseX, mouseY);
+        contextPanel = buildContextPanel(world, player, visible);
+        contextPanel.limitHeight(this.height - PANEL_MARGIN * 3 - debugHeight, contextScroll);
+        contextPanel.draw(canvas, PANEL_MARGIN, PANEL_MARGIN, mouseX, mouseY);
+        contextScroll = contextPanel.firstRow();
+
+        debugPanel.draw(canvas, PANEL_MARGIN, this.height - PANEL_MARGIN - debugHeight, mouseX,
+                mouseY);
+        debugScroll = debugPanel.firstRow();
 
         if (selectedLayer == null) {
             selectionPanel = null;
         } else {
             selectionPanel = buildSelectionPanel(world);
+            selectionPanel.limitHeight(this.height - PANEL_MARGIN * 2, selectionScroll);
             selectionPanel.draw(canvas,
                     this.width - PANEL_MARGIN - selectionPanel.width(canvas), PANEL_MARGIN,
                     mouseX, mouseY);
+            selectionScroll = selectionPanel.firstRow();
         }
     }
 
@@ -789,6 +809,7 @@ public final class MapScreen extends Screen {
         }
 
         selectedLayer = bestLayer;
+        selectionScroll = 0;
         selectedMap = bestLayer == null ? null : StructureValidationKey.mapKeyFor(world);
         selectedChunkX = bestChunkX;
         selectedChunkZ = bestChunkZ;
@@ -982,6 +1003,27 @@ public final class MapScreen extends Screen {
         return true;
     }
 
+    /** The wheel scrolls a panel it is over, and zooms the map everywhere else. */
+    private boolean onScroll(double mouseX, double mouseY, double steps) {
+        if (steps == 0.0) {
+            return false;
+        }
+        int rows = steps > 0.0 ? -PANEL_SCROLL_ROWS : PANEL_SCROLL_ROWS;
+        if (selectionPanel != null && selectionPanel.contains(mouseX, mouseY)) {
+            selectionScroll = Math.max(0, selectionScroll + rows);
+            return true;
+        }
+        if (contextPanel != null && contextPanel.contains(mouseX, mouseY)) {
+            contextScroll = Math.max(0, contextScroll + rows);
+            return true;
+        }
+        if (debugPanel != null && debugPanel.contains(mouseX, mouseY)) {
+            debugScroll = Math.max(0, debugScroll + rows);
+            return true;
+        }
+        return zoom(steps, mouseX, mouseY);
+    }
+
     private boolean zoom(double steps, double anchorX, double anchorY) {
         if (steps == 0.0) {
             return false;
@@ -1038,7 +1080,7 @@ public final class MapScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-        return zoom(scrollY, mouseX, mouseY) || super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+        return onScroll(mouseX, mouseY, scrollY) || super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
     }
 
     @Override
@@ -1068,7 +1110,7 @@ public final class MapScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double amount) {
-        return zoom(amount, mouseX, mouseY) || super.mouseScrolled(mouseX, mouseY, amount);
+        return onScroll(mouseX, mouseY, amount) || super.mouseScrolled(mouseX, mouseY, amount);
     }
 
     @Override

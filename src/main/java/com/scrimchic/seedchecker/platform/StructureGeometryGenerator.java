@@ -5,6 +5,14 @@ import com.scrimchic.seedchecker.worldgen.StructureType;
 
 //? if >=1.18 {
 import com.scrimchic.seedchecker.core.util.LazyInit;
+import com.scrimchic.seedchecker.worldgen.GenerationPoint;
+import com.scrimchic.seedchecker.worldgen.StructureBounds;
+
+import net.minecraft.core.Direction;
+import net.minecraft.world.level.levelgen.LegacyRandomSource;
+import net.minecraft.world.level.levelgen.WorldgenRandom;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
+import net.minecraft.world.level.levelgen.structure.structures.OceanMonumentPieces;
 //?} else {
 /*import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -26,7 +34,7 @@ import net.minecraft.server.packs.resources.SimpleReloadableResourceManager;
 import net.minecraft.util.datafix.DataFixers;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.biome.Biome;
-import net.minecraft.world.level.biome.OverworldBiomeSource;
+import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
@@ -62,9 +70,14 @@ import net.minecraft.world.level.storage.LevelStorageSource;*/
  * versions moved into {@code Structure.adjustBoundingBox} - so both versions report the same
  * thing.
  *
- * <p>On 1.16.5 the pillager outpost (another bearded jigsaw) and the mineshaft (a plain start its
- * own {@code generatePieces} moves below sea level) are built and measured the same way; from 1.18
- * the outpost, the trail ruins and the mineshaft come out of their stubs like the other jigsaws.
+ * <p>On 1.16.5 the pillager outpost (another bearded jigsaw), the mineshaft (a plain start its own
+ * {@code generatePieces} moves below sea level), the woodland mansion (placed on its lowest terrain
+ * corner), the ruined portal (placed on its terrain column) and the ocean monument (always at y 39)
+ * are built and measured the same way; from 1.18 the outpost, the trail ruins, the mineshaft, the
+ * mansion and the portals come out of their stubs like the other jigsaws, and the monument's single
+ * {@code MonumentBuilding} is built directly. Neither the portal's nor the mansion's placement
+ * moves a piece afterwards: the portal only widens the chunk box it writes into, the mansion only
+ * fills cobblestone under itself.
  *
  * <h2>Where there is no exact geometry</h2>
  *
@@ -103,6 +116,9 @@ public final class StructureGeometryGenerator {
      */
     public static StructureGeometry generate(BiomeWorldgenSession session, StructureType type,
                                              String variant, int chunkX, int chunkZ) {
+        if (type == StructureType.OCEAN_MONUMENT) {
+            return monumentGeometry(session, chunkX, chunkZ);
+        }
         // The stronghold is placed by its own ring list; its pieces are assembled through the same
         // stub path, and StrongholdStructure.findGenerationPoint never refuses.
         String structureId = type == StructureType.STRONGHOLD ? "minecraft:stronghold"
@@ -120,6 +136,30 @@ public final class StructureGeometryGenerator {
         }
         StructureGeometry geometry = session.jigsawGeometry(structureId, chunkX, chunkZ);
         return geometry != null ? geometry : StructureGeometry.unavailable(NO_START);
+    }
+
+    /**
+     * The ocean monument's one piece, built as {@code OceanMonumentStructure.generatePieces} builds
+     * it: a {@code MonumentBuilding} 29 blocks before the chunk's minimum corner, facing a direction
+     * drawn from a random seeded as {@code GenerationContext.makeRandom} seeds it. Built directly
+     * rather than through {@code findGenerationPoint}, whose surrounding-biome test reads a tag
+     * 1.20.1's loaded data pack leaves unbound; validation has already made that test. The box is
+     * vanilla's own, from its constructor, and nothing moves it while the monument is placed.
+     */
+    private static StructureGeometry monumentGeometry(BiomeWorldgenSession session, int chunkX,
+                                                      int chunkZ) {
+        WorldgenRandom random = new WorldgenRandom(new LegacyRandomSource(0L));
+        random.setLargeFeatureSeed(session.seed(), chunkX, chunkZ);
+        Direction direction = Direction.Plane.HORIZONTAL.getRandomDirection(random);
+        BoundingBox box = new OceanMonumentPieces.MonumentBuilding(random, (chunkX << 4) - 29,
+                (chunkZ << 4) - 29, direction).getBoundingBox();
+        int middleX = (chunkX << 4) + 8;
+        int middleZ = (chunkZ << 4) + 8;
+        return StructureGeometry.of(
+                new GenerationPoint(middleX, session.oceanFloorOccupiedHeight(middleX, middleZ),
+                        middleZ),
+                new StructureBounds(box.minX(), box.minY(), box.minZ(),
+                        box.maxX(), box.maxY(), box.maxZ()));
     }
 
     /** The structures validation only bounds on this version, so no start was reproduced. */
@@ -150,8 +190,27 @@ public final class StructureGeometryGenerator {
         if (feature == null) {
             return StructureGeometry.unavailable(HEIGHT_AT_PLACEMENT);
         }
+        StructureStart<?> start = legacyStart(session, feature, chunkX, chunkZ);
+        if (start == null || !start.isValid()) {
+            return StructureGeometry.unavailable(NO_START);
+        }
+        // This version computes no generation point. A jigsaw start's own box is inflated by 12 for
+        // the beard, so the pieces are measured directly instead.
+        return StructureGeometry.of(null, piecesExtent(start));
+    }
+
+    /^*
+     * Vanilla's own start at that chunk, built exactly as ChunkGenerator.createStructures builds
+     * it: the biome at the chunk's fixed quart, that biome's configured feature, the default grid
+     * settings, and ConfiguredStructureFeature.generate - placement, isFeatureChunk, generatePieces.
+     * Worker threads only; the template manager and chunk generator are this worker's.
+     *
+     * @return the start, or null when the chunk's biome does not list the feature at all
+     ^/
+    static StructureStart<?> legacyStart(BiomeWorldgenSession session, StructureFeature<?> feature,
+                                         int chunkX, int chunkZ) {
         LegacyStructureWorld world = worldFor(session);
-        OverworldBiomeSource biomeSource = session.legacyBiomeSource();
+        BiomeSource biomeSource = session.legacyBiomeSource();
         Biome biome = biomeSource.getNoiseBiome((chunkX << 2) + 2, 0, (chunkZ << 2) + 2);
 
         for (Supplier<ConfiguredStructureFeature<?, ?>> supplier
@@ -160,23 +219,19 @@ public final class StructureGeometryGenerator {
             if (configured.feature != feature) {
                 continue;
             }
-            StructureStart<?> start = configured.generate(world.registries, world.chunkGenerator,
-                    biomeSource, world.templates, session.seed(), new ChunkPos(chunkX, chunkZ),
-                    biome, 0, StructureSettings.DEFAULTS.get(feature));
-            if (!start.isValid()) {
-                return StructureGeometry.unavailable(NO_START);
-            }
-            // This version computes no generation point. A jigsaw start's own box is inflated by 12
-            // for the beard, so the pieces are measured directly instead.
-            return StructureGeometry.of(null, piecesExtent(start));
+            return configured.generate(world.registries, world.chunkGenerator, biomeSource,
+                    world.templates, session.seed(), new ChunkPos(chunkX, chunkZ), biome, 0,
+                    StructureSettings.DEFAULTS.get(feature));
         }
-        return StructureGeometry.unavailable(NO_START);
+        return null;
     }
 
     /^*
      * The structures whose pieces already stand at their final height once the start is built: the
-     * jigsaws, projected onto the terrain by JigsawPlacement, and the mineshaft, which its own
-     * generatePieces moves below sea level. Every other structure here waits for the chunk.
+     * jigsaws, projected onto the terrain by JigsawPlacement; the mineshaft, which its own
+     * generatePieces moves below sea level; the mansion and the ruined portal, which generatePieces
+     * places on the terrain; and the monument, at a literal y 39. Every other structure here waits
+     * for the chunk.
      ^/
     private static StructureFeature<?> startTimeGeometryFeature(StructureType type) {
         switch (type) {
@@ -186,6 +241,12 @@ public final class StructureGeometryGenerator {
                 return StructureFeature.PILLAGER_OUTPOST;
             case MINESHAFT:
                 return StructureFeature.MINESHAFT;
+            case WOODLAND_MANSION:
+                return StructureFeature.WOODLAND_MANSION;
+            case RUINED_PORTAL:
+                return StructureFeature.RUINED_PORTAL;
+            case OCEAN_MONUMENT:
+                return StructureFeature.OCEAN_MONUMENT;
             default:
                 return null;
         }
@@ -199,7 +260,7 @@ public final class StructureGeometryGenerator {
     private static StructureGeometry strongholdGeometry(BiomeWorldgenSession session, int chunkX,
                                                         int chunkZ) {
         LegacyStructureWorld world = worldFor(session);
-        OverworldBiomeSource biomeSource = session.legacyBiomeSource();
+        BiomeSource biomeSource = session.legacyBiomeSource();
         Biome biome = biomeSource.getNoiseBiome((chunkX << 2) + 2, 0, (chunkZ << 2) + 2);
         StructureStart<?> start = StructureFeatures.STRONGHOLD.generate(world.registries,
                 world.chunkGenerator, biomeSource, world.templates, session.seed(),
@@ -253,6 +314,7 @@ public final class StructureGeometryGenerator {
             return held;
         }
         ensureStructuresBootstrapped();
+        // Terrain-placed pieces - the mansion's corners, the ruined portal's column - read it.
         final NoiseGeneratorSettings settings = BuiltinRegistries.NOISE_GENERATOR_SETTINGS
                 .getOrThrow(NoiseGeneratorSettings.OVERWORLD);
         ChunkGenerator chunkGenerator = new NoiseBasedChunkGenerator(session.legacyBiomeSource(),
@@ -264,7 +326,7 @@ public final class StructureGeometryGenerator {
     }
 
     /^* The village's template pools are registered by this, and must be before a start is built. ^/
-    private static synchronized void ensureStructuresBootstrapped() {
+    static synchronized void ensureStructuresBootstrapped() {
         if (!structuresBootstrapped) {
             StructureFeature.bootstrap();
             structuresBootstrapped = true;

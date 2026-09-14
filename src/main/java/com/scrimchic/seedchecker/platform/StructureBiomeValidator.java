@@ -24,7 +24,8 @@ import com.google.gson.JsonParser;
 import net.minecraft.data.BuiltinRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.biome.Biome;
-import net.minecraft.world.level.levelgen.feature.StructureFeature;*/
+import net.minecraft.world.level.levelgen.feature.StructureFeature;
+import net.minecraft.world.level.levelgen.structure.StructureStart;*/
 //?}
 
 /**
@@ -92,7 +93,18 @@ import net.minecraft.world.level.levelgen.feature.StructureFeature;*/
  * <p>The mineshaft goes the same way though it is no jigsaw: its stub sits at the chunk's middle X,
  * minimum Z and a height its own pieces decide - moved below sea level at random, or for the
  * badlands variant onto the terrain - and its {@code findGenerationPoint} dereferences no biome tag,
- * so the loaded data pack answers it on 1.20.1 exactly as on 26.2.
+ * so the loaded data pack answers it on 1.20.1 exactly as on 26.2. So do the woodland mansion
+ * (a random rotation, then the lowest of four terrain corners, refused below y 60) and the seven
+ * ruined portal entries (a weighted setup, a template, a rotation and mirror, and a height from the
+ * terrain column), whose {@code findGenerationPoint} never refuses at all.
+ *
+ * <p><strong>Exact position with an area test: the ocean monument.</strong>
+ * {@code OceanMonumentStructure.findGenerationPoint} first requires every biome
+ * {@code BiomeSource.getBiomesWithin} returns around (chunk minimum + 9, sea level, chunk minimum +
+ * 9) at radius 29 to be in {@code #required_ocean_monument_surrounding}, then anchors on the chunk
+ * centre over {@code OCEAN_FLOOR_WG}. The area test reads the tag through {@code Holder.is}, which
+ * 1.20.1's loaded registries cannot answer, so it is reproduced here - every quart of the box, over
+ * the resolved tag - and the anchor too, as for the surface structures.
  *
  * <h2>Placement comes first</h2>
  *
@@ -187,7 +199,7 @@ public final class StructureBiomeValidator {
         if (entries == null) {
             return StructureValidation.unknown("this version declares no biomes for it");
         }
-        return evaluate(session, entries, chunkX, chunkZ);
+        return evaluate(session, type, entries, chunkX, chunkZ);
     }
 
     private static Map<StructureType, List<Entry>> data() {
@@ -261,8 +273,15 @@ public final class StructureBiomeValidator {
          */
         private final int[] footprint;
 
+        /** Whether an {@link Position#EXACT} entry anchors on the ocean floor, not the surface. */
+        private final boolean oceanFloor;
+
+        /** The area every biome of which the entry requires first, or {@code null}. */
+        private final Surrounding surrounding;
+
         Entry(String name, String structureId, String biomeTag, int weight, Set<String> biomeIds,
-              Position position, String undecidable, int[] footprint) {
+              Position position, String undecidable, int[] footprint, boolean oceanFloor,
+              Surrounding surrounding) {
             this.name = name;
             this.structureId = structureId;
             this.biomeTag = biomeTag;
@@ -271,7 +290,31 @@ public final class StructureBiomeValidator {
             this.position = position;
             this.undecidable = undecidable;
             this.footprint = footprint;
+            this.oceanFloor = oceanFloor;
+            this.surrounding = surrounding;
         }
+    }
+
+    /** A biome test over a whole box of quarts around the candidate, before its own position. */
+    private static final class Surrounding {
+
+        private final int radius;
+        private final Set<String> biomeIds;
+
+        Surrounding(int radius, Set<String> biomeIds) {
+            this.radius = radius;
+            this.biomeIds = biomeIds;
+        }
+    }
+
+    /**
+     * The biomes an entry requires all around it, e.g. the monument's ocean and river set; empty
+     * for an entry with no such test.
+     */
+    public static Set<String> surroundingBiomes(StructureType type, String variantName) {
+        Entry entry = entryOf(type, variantName);
+        return entry == null || entry.surrounding == null
+                ? Collections.<String>emptySet() : entry.surrounding.biomeIds;
     }
 
     // ------------------------------------------------------------- inspection
@@ -391,11 +434,27 @@ public final class StructureBiomeValidator {
      * through the same loaded data pack.
      *
      * <p>{@code MineshaftStructure.findGenerationPoint} assembles every piece to decide the stub's
-     * height, and for the badlands variant samples the terrain as well. None of it reads a biome
-     * tag, which is what makes it safe on 1.20.1's unbound registries.
+     * height, and for the badlands variant samples the terrain as well.
+     * {@code WoodlandMansionStructure} draws a rotation and refuses when the lowest of its terrain
+     * corners is below y 60; {@code RuinedPortalStructure} draws a setup, a template, a rotation and a
+     * mirror, and takes its height from the terrain column and {@code findSuitableY}. None of the
+     * three reads a biome tag, which is what makes them safe on 1.20.1's unbound registries.
      */
-    private static final Set<String> VANILLA_GENERATION_POINT =
-            new HashSet<String>(java.util.Arrays.asList("minecraft:mineshaft"));
+    private static final Set<String> VANILLA_GENERATION_POINT = new HashSet<String>(
+            java.util.Arrays.asList("minecraft:mineshaft", "minecraft:woodland_mansion",
+                    "minecraft:ruined_portal"));
+
+    /**
+     * {@code OceanMonumentStructure}: reproduced here, see the class comment. Radius and tag are
+     * literals of its {@code findGenerationPoint}, and {@code StructureBiomeValidatorTest} holds
+     * the reproduction to vanilla's own on 26.2, where the tag is bound.
+     */
+    private static final String OCEAN_MONUMENT = "minecraft:ocean_monument";
+    private static final int MONUMENT_SURROUNDING_RADIUS = 29;
+    private static final String MONUMENT_SURROUNDING_TAG =
+            "minecraft:required_ocean_monument_surrounding";
+    private static final String SURROUNDING_REFUSED =
+            "a biome within 29 blocks is not ocean or river";
 
     private static final String EMPTY_JIGSAW_REASON =
             "a jigsaw of size 0 hands no pieces to its structure start";
@@ -444,13 +503,19 @@ public final class StructureBiomeValidator {
                 return "mineshafts";
             case TRAIL_RUINS:
                 return "trail_ruins";
+            case OCEAN_MONUMENT:
+                return "ocean_monuments";
+            case WOODLAND_MANSION:
+                return "woodland_mansions";
+            case RUINED_PORTAL:
+                return "ruined_portals";
             default:
                 return null;
         }
     }
 
     private static Position positionOf(String structureTypeId, int jigsawSize) {
-        if (SURFACE_ANCHORED.containsKey(structureTypeId)) {
+        if (SURFACE_ANCHORED.containsKey(structureTypeId) || OCEAN_MONUMENT.equals(structureTypeId)) {
             return Position.EXACT;
         }
         if ("minecraft:jigsaw".equals(structureTypeId)) {
@@ -483,6 +548,12 @@ public final class StructureBiomeValidator {
      * in vanilla's weighted order, and for each, vanilla's own generation point followed by the
      * biome test at it. The first entry that passes is the one vanilla builds.
      *
+     * <p>An entry none of whose biomes the overworld's source can return - the ruined portal set's
+     * nether entry - is not attempted. Vanilla does attempt it, since {@code createStructures} draws
+     * over the whole list, but its biome test then refuses at whatever position comes back, the
+     * attempt has a random of its own, and the draw that ordered the entries is already made; so
+     * skipping it changes the cost and nothing else.
+     *
      * @return the decision, or {@code null} while the vanilla structure data is still loading on
      *         another worker
      */
@@ -510,9 +581,13 @@ public final class StructureBiomeValidator {
             order = session.structureSelectionOrder(weights, chunkX, chunkZ);
         }
 
+        Set<String> possibleBiomes = session.possibleBiomeIds();
         String firstBiome = null;
         for (int i = 0; i < order.length; i++) {
             Entry entry = entries.get(order[i]);
+            if (Collections.disjoint(entry.biomeIds, possibleBiomes)) {
+                continue;
+            }
             GenerationPoint point = session.jigsawGenerationPoint(entry.structureId, chunkX, chunkZ);
             if (point == null) {
                 // No start piece: vanilla's attempt fails and it moves on to the next entry.
@@ -538,10 +613,10 @@ public final class StructureBiomeValidator {
      * <p>A set may mix them: the shipwrecks set holds one entry this phase reproduces exactly and
      * one it only bounds. Vanilla tries a set's entries until one generates, so any entry
      * accepting is a yes, and only a set where <em>every</em> entry was decided and refused is a
-     * no.
+     * no. The type is not needed here; 1.16.5's counterpart needs it.
      */
-    private static StructureValidation evaluate(BiomeWorldgenSession session, List<Entry> entries,
-                                                int chunkX, int chunkZ) {
+    private static StructureValidation evaluate(BiomeWorldgenSession session, StructureType type,
+                                                List<Entry> entries, int chunkX, int chunkZ) {
         if (isJigsawSet(entries)) {
             return evaluateJigsawSet(session, entries, chunkX, chunkZ);
         }
@@ -654,14 +729,23 @@ public final class StructureBiomeValidator {
         int middleX = (chunkX << 4) + 8;
         int middleZ = (chunkZ << 4) + 8;
 
-        int stubY = session.surfaceOccupiedHeight(middleX, middleZ);
+        // Every condition is part of one conjunction, so they are tested cheapest first: one
+        // biome sample of the area, then the anchor column, then the rest of the area.
+        if (entry.surrounding != null
+                && !surroundingSampleAccepted(session, entry.surrounding, chunkX, chunkZ, match,
+                        true)) {
+            return;
+        }
+        int stubY = entry.oceanFloor
+                ? session.oceanFloorOccupiedHeight(middleX, middleZ)
+                : session.surfaceOccupiedHeight(middleX, middleZ);
         String biomeId = session.sampleBiomeIdAtQuart(middleX >> 2, stubY >> 2, middleZ >> 2);
         match.lastSeen = biomeId;
         if (!entry.biomeIds.contains(biomeId)) {
             return;
         }
 
-        if (entry.footprint.length == 2) {
+        if (entry.footprint != null && entry.footprint.length == 2) {
             // Structure.getLowestY: the corners of width by depth from the chunk's minimum corner.
             int width = entry.footprint[0];
             int depth = entry.footprint[1];
@@ -677,7 +761,55 @@ public final class StructureBiomeValidator {
                 return;
             }
         }
+        if (entry.surrounding != null
+                && !surroundingSampleAccepted(session, entry.surrounding, chunkX, chunkZ, match,
+                        false)) {
+            return;
+        }
         match.accept(entry, biomeId, new GenerationPoint(middleX, stubY, middleZ));
+    }
+
+    /**
+     * {@code BiomeSource.getBiomesWithin(x, seaLevel, z, radius, sampler)} tested against a biome
+     * set, where x and z are the chunk's minimum plus 9: every quart from
+     * {@code QuartPos.fromBlock(c - radius)} to {@code QuartPos.fromBlock(c + radius)} inclusive,
+     * on all three axes. Vanilla collects the set first; asking "all in the set" of each sample
+     * with an early exit is the same answer.
+     *
+     * @param centreOnly test only the quart holding the centre - one of the box's own samples, so
+     *                   a refusal there is already vanilla's refusal
+     */
+    private static boolean surroundingSampleAccepted(BiomeWorldgenSession session,
+                                                     Surrounding surrounding, int chunkX,
+                                                     int chunkZ, Match match, boolean centreOnly) {
+        int x = (chunkX << 4) + 9;
+        int y = session.seaLevel();
+        int z = (chunkZ << 4) + 9;
+        int radius = surrounding.radius;
+        if (centreOnly) {
+            return surroundingAccepts(surrounding, session.sampleBiomeIdAtQuart(x >> 2, y >> 2,
+                    z >> 2), match);
+        }
+        for (int quartY = (y - radius) >> 2; quartY <= (y + radius) >> 2; quartY++) {
+            for (int quartX = (x - radius) >> 2; quartX <= (x + radius) >> 2; quartX++) {
+                for (int quartZ = (z - radius) >> 2; quartZ <= (z + radius) >> 2; quartZ++) {
+                    if (!surroundingAccepts(surrounding,
+                            session.sampleBiomeIdAtQuart(quartX, quartY, quartZ), match)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    private static boolean surroundingAccepts(Surrounding surrounding, String biomeId, Match match) {
+        if (surrounding.biomeIds.contains(biomeId)) {
+            return true;
+        }
+        match.lastSeen = biomeId;
+        match.rejectedBecause = SURROUNDING_REFUSED;
+        return false;
     }
 
     /**
@@ -754,7 +886,12 @@ public final class StructureBiomeValidator {
                             Collections.unmodifiableSet(biomes),
                             positionOf(structureTypeId, size),
                             undecidableReason(structureTypeId, size),
-                            SURFACE_ANCHORED.get(structureTypeId)));
+                            SURFACE_ANCHORED.get(structureTypeId),
+                            OCEAN_MONUMENT.equals(structureTypeId),
+                            OCEAN_MONUMENT.equals(structureTypeId)
+                                    ? new Surrounding(MONUMENT_SURROUNDING_RADIUS, resolveTag(
+                                            MONUMENT_SURROUNDING_TAG, tagCache, new HashSet<String>()))
+                                    : null));
                 }
             }
             if (!entries.isEmpty()) {
@@ -897,6 +1034,12 @@ public final class StructureBiomeValidator {
                 return StructureFeature.BURIED_TREASURE;
             case MINESHAFT:
                 return StructureFeature.MINESHAFT;
+            case OCEAN_MONUMENT:
+                return StructureFeature.OCEAN_MONUMENT;
+            case WOODLAND_MANSION:
+                return StructureFeature.WOODLAND_MANSION;
+            case RUINED_PORTAL:
+                return StructureFeature.RUINED_PORTAL;
             default:
                 return null;
         }
@@ -908,18 +1051,97 @@ public final class StructureBiomeValidator {
      * position is fixed and the height is a literal zero, so this reproduces vanilla's answer
      * rather than bounding it, and every candidate is decidable.
      ^/
-    private static StructureValidation evaluate(BiomeWorldgenSession session, List<Entry> entries,
-                                                int chunkX, int chunkZ) {
+    private static StructureValidation evaluate(BiomeWorldgenSession session, StructureType type,
+                                                List<Entry> entries, int chunkX, int chunkZ) {
         String biomeId = session.sampleBiomeIdAtQuart((chunkX << 2) + 2, 0, (chunkZ << 2) + 2);
         for (int i = 0; i < entries.size(); i++) {
             Entry entry = entries.get(i);
             if (entry.biomeIds.contains(biomeId)) {
                 // Exact in both directions here: Phase 3E-2b checked this answer against vanilla's
-                // real generate() over 59,026 candidates without a single disagreement.
+                // real generate() over 59,026 candidates without a single disagreement, and Phase
+                // 3H-1 does the same for every structure added since.
+                String refusal = featureChunkRefusal(session, type, entry, chunkX, chunkZ);
+                if (refusal != null) {
+                    return StructureValidation.incompatible(biomeId, refusal);
+                }
                 return StructureValidation.exactlyCompatible(entry.name, biomeId);
             }
         }
         return StructureValidation.incompatible(biomeId);
+    }
+
+    private static final String MONUMENT_BIOMES_REFUSED =
+            "a biome within 16 blocks does not allow a monument";
+    private static final String MONUMENT_SURROUNDING_REFUSED =
+            "a biome within 29 blocks is not ocean or river";
+    private static final String MANSION_BIOMES_REFUSED =
+            "a biome within 32 blocks does not allow a mansion";
+    private static final String MANSION_TERRAIN_REFUSED =
+            "vanilla builds no start: the lowest corner is below y 60";
+
+    /^*
+     * The isFeatureChunk overrides that are not placement. OceanMonumentFeature and
+     * WoodlandMansionFeature test every biome BiomeSource.getBiomesWithin returns around
+     * (chunk * 16 + 9, sea level, chunk * 16 + 9): every quart from (c - radius) >> 2 to
+     * (c + radius) >> 2 inclusive. This version's overworld source ignores the height it is
+     * given, so the square alone is walked. The mansion's WoodlandMansionStart.generatePieces then
+     * builds nothing when the lowest of four terrain corners, placed by a rotation drawn from the
+     * start's own random, is below y 60 - asked of vanilla's own start rather than rebuilt, and only
+     * for a candidate every biome test has already let through.
+     *
+     * @return why vanilla builds nothing here, or null when it builds the structure
+     ^/
+    private static String featureChunkRefusal(BiomeWorldgenSession session, StructureType type,
+                                              Entry entry, int chunkX, int chunkZ) {
+        if (type == StructureType.OCEAN_MONUMENT) {
+            if (!allWithin(session, chunkX, chunkZ, 16, entry.biomeIds)) {
+                return MONUMENT_BIOMES_REFUSED;
+            }
+            return allWithin(session, chunkX, chunkZ, 29, oceanOrRiver())
+                    ? null : MONUMENT_SURROUNDING_REFUSED;
+        }
+        if (type == StructureType.WOODLAND_MANSION) {
+            if (!allWithin(session, chunkX, chunkZ, 32, entry.biomeIds)) {
+                return MANSION_BIOMES_REFUSED;
+            }
+            StructureStart<?> start = StructureGeometryGenerator.legacyStart(session,
+                    StructureFeature.WOODLAND_MANSION, chunkX, chunkZ);
+            return start != null && start.isValid() ? null : MANSION_TERRAIN_REFUSED;
+        }
+        return null;
+    }
+
+    private static boolean allWithin(BiomeWorldgenSession session, int chunkX, int chunkZ,
+                                     int radius, Set<String> accepted) {
+        int blockX = chunkX * 16 + 9;
+        int blockZ = chunkZ * 16 + 9;
+        for (int quartX = (blockX - radius) >> 2; quartX <= (blockX + radius) >> 2; quartX++) {
+            for (int quartZ = (blockZ - radius) >> 2; quartZ <= (blockZ + radius) >> 2; quartZ++) {
+                if (!accepted.contains(session.sampleBiomeIdAtQuart(quartX, 0, quartZ))) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static Set<String> oceanOrRiver;
+
+    /^* Every biome whose category is OCEAN or RIVER - the monument's test of the wider area. ^/
+    private static synchronized Set<String> oceanOrRiver() {
+        if (oceanOrRiver == null) {
+            Set<String> ids = new HashSet<String>();
+            Registry<Biome> registry = BuiltinRegistries.BIOME;
+            for (Biome biome : registry) {
+                ResourceLocation id = registry.getKey(biome);
+                if (id != null && (biome.getBiomeCategory() == Biome.BiomeCategory.OCEAN
+                        || biome.getBiomeCategory() == Biome.BiomeCategory.RIVER)) {
+                    ids.add(id.toString());
+                }
+            }
+            oceanOrRiver = Collections.unmodifiableSet(ids);
+        }
+        return oceanOrRiver;
     }
 
     /^*
@@ -961,11 +1183,12 @@ public final class StructureBiomeValidator {
             // unconditionally, so an accepted biome really does mean the structure generates.
             // isFeatureChunk is vanilla's "return true" for all but the pillager outpost, the
             // buried treasure and the mineshaft, whose overrides are pure placement and are applied
-            // by StructurePlacementEngine before a chunk is ever offered here.
+            // by StructurePlacementEngine before a chunk is ever offered here, and the monument and
+            // the mansion, whose area tests featureChunkRefusal reproduces.
             loaded.put(entry.getKey(), Collections.singletonList(
                     new Entry(null, null, null, 1,
                             Collections.unmodifiableSet(entry.getValue()), Position.EXACT, null,
-                            null)));
+                            null, false, null)));
         }
         return loaded;
     }

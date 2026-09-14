@@ -57,6 +57,9 @@ final class JigsawGenerator {
 
     private final VanillaStructureData data;
     private final RegistryAccess registries;
+
+    /** What a generation context is given: the worldgen registries plus, on 26.x, the static ones. */
+    private final RegistryAccess generationRegistries;
     private final StructureTemplateManager templates;
     private final long seed;
     private final RandomState randomState;
@@ -67,6 +70,7 @@ final class JigsawGenerator {
     JigsawGenerator(VanillaStructureData data, long seed) throws IOException {
         this.data = data;
         this.registries = data.registries();
+        this.generationRegistries = data.generationRegistries();
         this.templates = data.newTemplateManager();
         this.seed = seed;
 
@@ -136,7 +140,7 @@ final class JigsawGenerator {
             throw new IllegalStateException("the vanilla data pack has no structure " + structureId);
         }
         return structure.findValidGenerationPoint(
-                new Structure.GenerationContext(registries, chunkGenerator, biomeSource, randomState,
+                new Structure.GenerationContext(generationRegistries, chunkGenerator, biomeSource, randomState,
                         templates, seed, new ChunkPos(chunkX, chunkZ), heightAccessor, ANY_BIOME));
     }
 

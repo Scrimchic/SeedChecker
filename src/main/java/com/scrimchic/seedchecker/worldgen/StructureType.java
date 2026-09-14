@@ -25,6 +25,14 @@ public enum StructureType {
     BURIED_TREASURE("Buried Treasure"),
     MINESHAFT("Mineshaft"),
     TRAIL_RUINS("Trail Ruins"),
+    OCEAN_MONUMENT("Ocean Monument"),
+    WOODLAND_MANSION("Woodland Mansion"),
+
+    /**
+     * The overworld's portals. The vanilla structure set also holds the nether's entry; in the
+     * overworld no biome ever accepts it, so it takes part in the weighted order and never starts.
+     */
+    RUINED_PORTAL("Ruined Portal"),
 
     /** Not grid placed; never in {@link StructurePlacements}. */
     STRONGHOLD("Stronghold");

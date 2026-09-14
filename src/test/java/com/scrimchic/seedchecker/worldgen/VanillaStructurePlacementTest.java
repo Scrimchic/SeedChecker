@@ -318,6 +318,12 @@ class VanillaStructurePlacementTest {
                 return BuiltinStructureSets.MINESHAFTS;
             case TRAIL_RUINS:
                 return BuiltinStructureSets.TRAIL_RUINS;
+            case OCEAN_MONUMENT:
+                return BuiltinStructureSets.OCEAN_MONUMENTS;
+            case WOODLAND_MANSION:
+                return BuiltinStructureSets.WOODLAND_MANSIONS;
+            case RUINED_PORTAL:
+                return BuiltinStructureSets.RUINED_PORTALS;
             default:
                 return null;
         }
@@ -454,6 +460,12 @@ class VanillaStructurePlacementTest {
                 return StructureFeature.BURIED_TREASURE;
             case MINESHAFT:
                 return StructureFeature.MINESHAFT;
+            case OCEAN_MONUMENT:
+                return StructureFeature.OCEAN_MONUMENT;
+            case WOODLAND_MANSION:
+                return StructureFeature.WOODLAND_MANSION;
+            case RUINED_PORTAL:
+                return StructureFeature.RUINED_PORTAL;
             default:
                 return null;
         }

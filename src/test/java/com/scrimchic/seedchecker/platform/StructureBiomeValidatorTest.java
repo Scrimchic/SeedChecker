@@ -20,6 +20,7 @@ import com.scrimchic.seedchecker.worldgen.StructurePlacementEngine;
 import com.scrimchic.seedchecker.worldgen.StructurePlacements;
 import com.scrimchic.seedchecker.worldgen.StructureType;
 import com.scrimchic.seedchecker.worldgen.StructureValidation;
+import com.scrimchic.seedchecker.worldgen.StructureGeometry;
 
 //? if >=1.18 {
 import java.util.Optional;
@@ -29,7 +30,6 @@ import com.scrimchic.seedchecker.core.util.LazyInit;
 import com.scrimchic.seedchecker.worldgen.GenerationPoint;
 import com.scrimchic.seedchecker.worldgen.StructureBiomeStatus;
 import com.scrimchic.seedchecker.worldgen.StructureBounds;
-import com.scrimchic.seedchecker.worldgen.StructureGeometry;
 
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
@@ -58,9 +58,18 @@ import net.minecraft.world.level.levelgen.structure.StructureSet;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 import net.minecraft.world.level.levelgen.structure.structures.JigsawStructure;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
+import java.lang.reflect.Constructor;
+
+import net.minecraft.tags.BiomeTags;
+import net.minecraft.world.level.StructureManager;
+import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
+import net.minecraft.world.level.chunk.ProtoChunk;
+import net.minecraft.world.level.chunk.UpgradeData;
+import net.minecraft.world.level.levelgen.WorldOptions;
 //?}
 //? if >=26.1 {
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.chunk.PalettedContainerFactory;
 //?} else if >=1.18 {
 //?} else {
 /*import net.minecraft.core.Registry;
@@ -87,7 +96,6 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 import com.scrimchic.seedchecker.worldgen.StructureBounds;
-import com.scrimchic.seedchecker.worldgen.StructureGeometry;
 import org.junit.jupiter.api.AfterAll;*/
 //?}
 
@@ -320,6 +328,9 @@ class StructureBiomeValidatorTest {
             case BURIED_TREASURE:
             case MINESHAFT:
             case TRAIL_RUINS:
+            case OCEAN_MONUMENT:
+            case WOODLAND_MANSION:
+            case RUINED_PORTAL:
                 return true;
             default:
                 return false;
@@ -334,10 +345,16 @@ class StructureBiomeValidatorTest {
         return all;
     }
 
+    /** WorldgenWorkers' pool size on a machine with six or more cores. */
+    private static final int WORKERS = 3;
+
     @Test
     void phase3h1CostAndDensityAreReported() {
-        // A measurement, printed for the phase report: how dense each new structure's candidates are,
-        // and what one validation costs on this version. Nothing is asserted beyond "found some".
+        // A measurement, printed for the phase report: how dense each new structure's candidates
+        // are, what placing and validating one costs on this version, how long a full viewport's
+        // worth of them keeps the validation lane busy, and what geometry costs. Nothing is asserted
+        // beyond "found some". Validation is timed after a warm-up pass, so the one-off vanilla
+        // data load and template reads are not counted against a candidate.
         StructurePlacementEngine engine = new StructurePlacementEngine();
         ChunkRange area = ChunkRange.of(-256, -256, 255, 255);
         for (StructureType type : placements.types()) {
@@ -346,11 +363,18 @@ class StructureBiomeValidatorTest {
             }
             StructurePlacementConfig config = placements.get(type);
             final int[] found = {0};
+            long placementStart = System.nanoTime();
             engine.forEachCandidate(SEED, config, area, Integer.MAX_VALUE, (x, z) -> {
                 found[0]++;
                 return true;
             });
+            long regions = StructurePlacementEngine.regionCount(config, area);
+            double placementNs = (System.nanoTime() - placementStart) / (double) regions;
+
             List<int[]> sample = candidates(config, 40);
+            for (int i = 0; i < 5 && i < sample.size(); i++) {
+                StructureBiomeValidator.validate(session, type, sample.get(i)[0], sample.get(i)[1]);
+            }
             int accepted = 0;
             long start = System.nanoTime();
             for (int[] candidate : sample) {
@@ -361,12 +385,98 @@ class StructureBiomeValidatorTest {
                 }
             }
             double millis = (System.nanoTime() - start) / 1e6 / sample.size();
-            System.out.printf("phase 3H-1 %-16s %6.2f candidates per 10k chunks, %6.2f ms per "
-                            + "validation, %d of %d accepted%n", type, found[0] * 10000.0 / (512 * 512),
-                    millis, accepted, sample.size());
+
+            // Geometry of the first exact acceptance, searched for further out when the timed
+            // sample had none - the mansion's dark forests are rare.
+            String geometry = "no exact acceptance within 3000 candidates";
+            for (int[] candidate : candidates(config, isVanillaPointType(type) ? 3000 : 400)) {
+                StructureValidation result =
+                        StructureBiomeValidator.validate(session, type, candidate[0], candidate[1]);
+                if (result == null || !result.isCompatible() || !result.isExact()) {
+                    continue;
+                }
+                StructureGeometryGenerator.generate(session, type, result.variant(), candidate[0],
+                        candidate[1]);
+                long geometryStart = System.nanoTime();
+                StructureGeometry measured = StructureGeometryGenerator.generate(session, type,
+                        result.variant(), candidate[0], candidate[1]);
+                geometry = String.format("geometry %.1f ms%s", (System.nanoTime() - geometryStart) / 1e6,
+                        measured != null && measured.isAvailable() ? "" : " (no bounds)");
+                break;
+            }
+
+            System.out.printf("phase 3H-1 %-16s %6.2f candidates per 10k chunks, placement %5.1f ns "
+                            + "per region, %6.2f ms per validation, %d of %d accepted, %s%n", type,
+                    found[0] * 10000.0 / (512 * 512), placementNs, millis, accepted, sample.size(),
+                    geometry);
+            // A 480 by 270 GUI (1080p at GUI scale 4) at the widest zoom this layer still draws,
+            // and at one pixel per sixteen blocks: candidates in view, and how long the validation
+            // lane stays busy with nothing cached, on this worker's measured cost, shared by the pool.
+            for (double scale : new double[] {1.0 / 64, 1.0 / 16}) {
+                long chunksWide = Math.round(480 / scale / 16);
+                long chunksHigh = Math.round(270 / scale / 16);
+                double inView = found[0] * (double) (chunksWide * chunksHigh) / (512 * 512);
+                System.out.printf("phase 3H-1 %-16s viewport 480x270 at 1/%d px/block: %.0f candidates,"
+                                + " %.1f s to settle on %d workers%n", type, Math.round(1 / scale),
+                        inView, inView * millis / 1000.0 / WORKERS, WORKERS);
+            }
             assertTrue(found[0] > 0, type + " has no candidate in 512 by 512 chunks");
         }
+        //? if >=1.18 {
+        reportVanillaPointCost();
+        //?}
     }
+
+    private static boolean isVanillaPointType(StructureType type) {
+        return type == StructureType.WOODLAND_MANSION || type == StructureType.RUINED_PORTAL
+                || type == StructureType.OCEAN_MONUMENT;
+    }
+
+    //? if >=1.18 {
+    /**
+     * What one vanilla generation point costs for the entries behind the three most expensive
+     * validations: the mansion's terrain corners, and each portal entry's template, rotation and
+     * terrain column. The portal validation tries entries in weighted order until one's biome
+     * accepts, so it pays this several times per candidate.
+     */
+    private static void reportVanillaPointCost() {
+        assertEquals(LazyInit.State.READY, session.prepareJigsaw());
+        String[] structureIds = {"minecraft:mansion", "minecraft:ruined_portal",
+                "minecraft:ruined_portal_desert", "minecraft:ruined_portal_mountain",
+                "minecraft:ruined_portal_ocean"};
+        StructureType[] types = {StructureType.WOODLAND_MANSION, StructureType.RUINED_PORTAL,
+                StructureType.RUINED_PORTAL, StructureType.RUINED_PORTAL, StructureType.RUINED_PORTAL};
+        for (int i = 0; i < structureIds.length; i++) {
+            List<int[]> sample = candidates(placements.get(types[i]), 40);
+            session.jigsawGenerationPoint(structureIds[i], sample.get(0)[0], sample.get(0)[1]);
+            long start = System.nanoTime();
+            for (int[] candidate : sample) {
+                session.jigsawGenerationPoint(structureIds[i], candidate[0], candidate[1]);
+            }
+            System.out.printf("phase 3H-1 vanilla generation point %-32s %6.2f ms%n", structureIds[i],
+                    (System.nanoTime() - start) / 1e6 / sample.size());
+        }
+        // The monument's area test: every quart of a 15 by 16 by 15 box around the candidate when
+        // the centre passes, against the anchor column's single terrain height.
+        List<int[]> sample = candidates(placements.get(StructureType.OCEAN_MONUMENT), 40);
+        long start = System.nanoTime();
+        int boxes = 0;
+        for (int[] candidate : sample) {
+            int x = (candidate[0] << 4) + 9;
+            int z = (candidate[1] << 4) + 9;
+            for (int qy = (session.seaLevel() - 29) >> 2; qy <= (session.seaLevel() + 29) >> 2; qy++) {
+                for (int qx = (x - 29) >> 2; qx <= (x + 29) >> 2; qx++) {
+                    for (int qz = (z - 29) >> 2; qz <= (z + 29) >> 2; qz++) {
+                        session.sampleBiomeIdAtQuart(qx, qy, qz);
+                        boxes++;
+                    }
+                }
+            }
+        }
+        System.out.printf("phase 3H-1 monument full surrounding box %.2f ms (%d quarts)%n",
+                (System.nanoTime() - start) / 1e6 / sample.size(), boxes / sample.size());
+    }
+    //?}
 
     // ------------------------------------------------- version-specific oracle
 
@@ -387,7 +497,7 @@ class StructureBiomeValidatorTest {
         return ids;
     }
 
-    private static String keyName(ResourceKey<?> key) {
+    static String keyName(ResourceKey<?> key) {
         //? if >=26.1 {
         return key.identifier().toString();
         //?} else {
@@ -773,6 +883,7 @@ class StructureBiomeValidatorTest {
         int generated = 0;
         int rejected = 0;
         int severalValid = 0;
+        java.util.Map<StructureType, int[]> tally = new java.util.LinkedHashMap<StructureType, int[]>();
 
         for (long seed : ORACLE_SEEDS) {
             BiomeWorldgenSession seedSession =
@@ -783,8 +894,11 @@ class StructureBiomeValidatorTest {
                 if (!isJigsawType(type) || !runsOn(type, seed)) {
                     continue;
                 }
+                // Dark forests are rare, so the mansion needs a wide net to meet acceptances.
                 int wanted = type == StructureType.VILLAGE ? 40
-                        : type == StructureType.ANCIENT_CITY ? 120 : 60;
+                        : type == StructureType.ANCIENT_CITY ? 120
+                        : type == StructureType.WOODLAND_MANSION ? 300 : 60;
+                int[] counts = tally.computeIfAbsent(type, key -> new int[3]);
                 for (int[] candidate : vanillaPointCandidates(type, wanted, seed)) {
                     StructureValidation ours = StructureBiomeValidator
                             .validate(seedSession, type, candidate[0], candidate[1]);
@@ -813,6 +927,7 @@ class StructureBiomeValidatorTest {
                         assertEquals(pointOf(stubs.get(ours.variant())), ours.generationPoint(),
                                 where + " exact generation position");
                         generated++;
+                        counts[1]++;
                         if (valid.size() > 1) {
                             severalValid++;
                         }
@@ -820,12 +935,28 @@ class StructureBiomeValidatorTest {
                         rejected++;
                     }
                     compared++;
+                    counts[0]++;
+                    if (valid.size() > 1) {
+                        counts[2]++;
+                    }
                 }
             }
         }
         System.out.println("jigsaw oracle: " + compared + " candidates, " + generated
                 + " generated, " + rejected + " rejected, " + severalValid
                 + " with more than one valid entry");
+        for (java.util.Map.Entry<StructureType, int[]> entry : tally.entrySet()) {
+            int[] counts = entry.getValue();
+            System.out.println("jigsaw oracle " + entry.getKey() + ": " + counts[0] + " candidates, "
+                    + counts[1] + " generated, " + (counts[0] - counts[1]) + " rejected, "
+                    + counts[2] + " with more than one valid entry");
+            assertTrue(counts[1] > 0, entry.getKey() + ": vanilla generated nothing, so acceptance "
+                    + "and the generation point were never compared");
+        }
+        // Every biome the overworld source can return accepts some ruined portal entry, so the
+        // portal has no rejection to compare; the mansion has both.
+        int[] mansion = tally.get(StructureType.WOODLAND_MANSION);
+        assertTrue(mansion != null && mansion[1] < mansion[0], "no mansion rejection was compared");
         assertTrue(generated > 0, "nothing generated, so acceptance was never compared");
         assertTrue(rejected > 0, "nothing was rejected, so rejection was never compared");
     }
@@ -919,7 +1050,8 @@ class StructureBiomeValidatorTest {
                 // structure twice. The Phase 3H-1 ones run on twice the seeds, one each.
                 int wanted = type == StructureType.VILLAGE || isPhase3h1(type) ? 1 : 2;
                 int found = 0;
-                for (int[] candidate : candidates(placements.get(type), 600, seed)) {
+                int pool = type == StructureType.WOODLAND_MANSION ? 3000 : 600;
+                for (int[] candidate : candidates(placements.get(type), pool, seed)) {
                     if (found >= wanted) {
                         break;
                     }
@@ -1137,15 +1269,217 @@ class StructureBiomeValidatorTest {
         }
     }
 
-    private static void assertSameBox(BoundingBox expected, BoundingBox actual, String what) {
+    // ----------------------------------------- Phase 3H-1: the ocean monument
+
+    @Test
+    void oceanMonumentMatchesVanillaOnEverySeed() throws Exception {
+        // The monument's surrounding test reads its tag through Holder.is, so on 1.20.1 vanilla's
+        // own findGenerationPoint cannot run over the loaded data pack. The oracle runs the rest of
+        // it with vanilla's own parts instead - BiomeSource.getBiomesWithin for the area, the chunk
+        // generator's OCEAN_FLOOR_WG height for the anchor, the biome source for the anchor's
+        // biome - over the tag contents read from the data pack. The test binds the tags as a world
+        // does (structureData), so vanilla's whole findValidGenerationPoint and Structure.generate,
+        // reading the tag through Holder.is, are held to it as well on both modern targets.
+        StructureType type = StructureType.OCEAN_MONUMENT;
+        Set<String> surrounding = StructureBiomeValidator.surroundingBiomes(type, "monument");
+        Set<String> accepted = StructureBiomeValidator.acceptedBiomes(type, "monument");
+        assertFalse(surrounding.isEmpty(), "no surrounding biomes were read");
+        int compared = 0;
+        int generated = 0;
+        int refusedBySurrounding = 0;
+        int boundsCompared = 0;
+
+        for (long seed : EDGE_SEEDS) {
+            BiomeWorldgenSession seedSession =
+                    BiomeWorldgenSession.create(seed, BiomeWorldgenSession.OVERWORLD);
+            LoadedWorld world = new LoadedWorld(seed);
+            int boundsThisSeed = 0;
+            for (int[] candidate : oracleCandidates(placements.get(type), 80, 30, seed)) {
+                String where = "monument seed " + seed + " chunk " + candidate[0] + "," + candidate[1];
+                int areaX = (candidate[0] << 4) + 9;
+                int areaZ = (candidate[1] << 4) + 9;
+                boolean area = true;
+                for (Holder<Biome> biome : world.biomeSource.getBiomesWithin(areaX,
+                        world.chunkGenerator.getSeaLevel(), areaZ, 29, world.randomState.sampler())) {
+                    if (!surrounding.contains(keyName(biome.unwrapKey().get()))) {
+                        area = false;
+                        break;
+                    }
+                }
+                int middleX = (candidate[0] << 4) + 8;
+                int middleZ = (candidate[1] << 4) + 8;
+                int stubY = world.chunkGenerator.getFirstOccupiedHeight(middleX, middleZ,
+                        Heightmap.Types.OCEAN_FLOOR_WG, world.heightAccessor, world.randomState);
+                boolean anchor = accepted.contains(world.biomeIdAt(middleX, stubY, middleZ));
+                boolean vanilla = area && anchor;
+
+                StructureValidation ours =
+                        StructureBiomeValidator.validate(seedSession, type, candidate[0], candidate[1]);
+                assertEquals(vanilla, ours.isCompatible(), where + ": " + ours);
+                compared++;
+                if (anchor && !area) {
+                    refusedBySurrounding++;
+                }
+                assertEquals(vanilla, world.structure("monument").value().findValidGenerationPoint(
+                        world.context(candidate[0], candidate[1], predicateFor(type, "monument")))
+                        .isPresent(), where + ": vanilla's own findValidGenerationPoint");
+                if (!vanilla) {
+                    continue;
+                }
+                generated++;
+                assertTrue(ours.isExact(), where);
+                assertEquals(new GenerationPoint(middleX, stubY, middleZ), ours.generationPoint(), where);
+                if (boundsThisSeed >= 2) {
+                    continue;
+                }
+                StructureGeometry geometry = StructureGeometryGenerator.generate(seedSession, type,
+                        ours.variant(), candidate[0], candidate[1]);
+                assertTrue(geometry.isAvailable(), where + ": " + geometry);
+                assertEquals(ours.generationPoint(), geometry.generationPoint(), where);
+                StructureBounds bounds = geometry.bounds();
+                // MonumentBuilding's literals: 29 blocks before the chunk corner, 58 wide, y 39 to 61.
+                assertEquals(((candidate[0] << 4) - 29) + ",39," + ((candidate[1] << 4) - 29) + " .. "
+                                + ((candidate[0] << 4) + 28) + ",61," + ((candidate[1] << 4) + 28),
+                        bounds.minX() + "," + bounds.minY() + "," + bounds.minZ() + " .. "
+                                + bounds.maxX() + "," + bounds.maxY() + "," + bounds.maxZ(), where);
+                StructureStart start = world.start("monument", candidate[0], candidate[1],
+                        predicateFor(type, "monument"));
+                assertTrue(start.isValid(), where + ": accepted but vanilla builds no monument");
+                assertSameBox(start.getBoundingBox(), new BoundingBox(bounds.minX(), bounds.minY(),
+                        bounds.minZ(), bounds.maxX(), bounds.maxY(), bounds.maxZ()),
+                        where + " StructureStart box");
+                boundsThisSeed++;
+                boundsCompared++;
+            }
+        }
+        System.out.println("monument oracle: " + compared + " candidates, " + generated
+                + " generated, " + refusedBySurrounding + " refused only by the surrounding area, "
+                + boundsCompared + " bounds compared");
+        assertTrue(generated > 0 && generated < compared, "both outcomes must be compared");
+        assertTrue(refusedBySurrounding > 0,
+                "the surrounding test never decided anything, so it was not exercised");
+    }
+
+    @Test
+    void theMonumentSurroundingSetIsTheBoundTag() {
+        Set<String> bound = new java.util.HashSet<String>();
+        for (Holder<Biome> biome : structureData().registries().lookupOrThrow(Registries.BIOME)
+                .getOrThrow(BiomeTags.REQUIRED_OCEAN_MONUMENT_SURROUNDING)) {
+            bound.add(keyName(biome.unwrapKey().get()));
+        }
+        assertEquals(bound, StructureBiomeValidator.surroundingBiomes(StructureType.OCEAN_MONUMENT,
+                "monument"));
+    }
+
+    @Test
+    void multiEntrySetsBuildTheEntryVanillaCreateStructuresBuilds() throws Exception {
+        // Where more than one entry of a set is valid, the entry vanilla builds depends on its
+        // weighted selection order. The oracle is vanilla's whole ChunkGenerator.createStructures on
+        // a bare ProtoChunk, with only that set possible: the start left in the chunk names the
+        // entry vanilla chose. A bounded search, since such candidates are uncommon.
+        //
+        // The mineshaft is the case that needs it. Its two biome tags are disjoint (#is_badlands
+        // against a list with no badlands in it), but that does not make the entries exclusive:
+        // the normal entry tests the biome at its own randomly lowered height, the mesa entry at the
+        // terrain, and a badlands surface above dripstone or lush caves makes both valid.
+        int ambiguous = 0;
+        for (StructureType type : new StructureType[] {StructureType.MINESHAFT,
+                StructureType.RUINED_PORTAL}) {
+            int found = 0;
+            int searched = 0;
+            for (long seed : new long[] {SEED, 0L, 1L}) {
+                BiomeWorldgenSession seedSession =
+                        BiomeWorldgenSession.create(seed, BiomeWorldgenSession.OVERWORLD);
+                LoadedWorld world = new LoadedWorld(seed);
+                final String path = setPathOf(type);
+                Holder<StructureSet> set = world.data.registries().lookupOrThrow(Registries.STRUCTURE_SET)
+                        .listElements().filter(holder -> keyName(holder.key()).endsWith(":" + path))
+                        .findFirst().orElseThrow(() -> new AssertionError("no set " + path));
+                Constructor<ChunkGeneratorStructureState> constructor =
+                        ChunkGeneratorStructureState.class.getDeclaredConstructor(RandomState.class,
+                                BiomeSource.class, long.class, long.class, List.class);
+                constructor.setAccessible(true);
+                ChunkGeneratorStructureState state = constructor.newInstance(world.randomState,
+                        world.biomeSource, seed, seed, java.util.Collections.singletonList(set));
+
+                int pool = type == StructureType.MINESHAFT ? 3000 : 250;
+                for (int[] candidate : candidates(placements.get(type), pool, seed)) {
+                    if (found >= 12) {
+                        break;
+                    }
+                    searched++;
+                    int valid = 0;
+                    for (String variant : StructureBiomeValidator.variantNames(type)) {
+                        if (world.structure(variant).value().findValidGenerationPoint(
+                                world.context(candidate[0], candidate[1], predicateFor(type, variant)))
+                                .isPresent()) {
+                            valid++;
+                        }
+                    }
+                    if (valid < 2) {
+                        continue;
+                    }
+                    String where = type + " seed " + seed + " chunk " + candidate[0] + "," + candidate[1];
+                    StructureValidation ours = StructureBiomeValidator
+                            .validate(seedSession, type, candidate[0], candidate[1]);
+                    assertEquals(vanillaBuiltEntry(world, state, candidate[0], candidate[1]),
+                            ours.variant(), where + ": " + valid + " entries valid");
+                    found++;
+                }
+            }
+            System.out.println("selection order oracle " + type + ": " + found
+                    + " candidates with several valid entries, out of " + searched + " searched");
+            assertTrue(found > 0, type + ": no candidate with several valid entries was found, so "
+                    + "vanilla's choice between them was never compared");
+            ambiguous += found;
+        }
+        assertTrue(ambiguous > 0, "no candidate with several valid entries was found");
+    }
+
+    /** The entry vanilla's createStructures leaves a valid start for, or null for none. */
+    private static String vanillaBuiltEntry(LoadedWorld world, ChunkGeneratorStructureState state,
+                                            int chunkX, int chunkZ) {
+        //? if >=26.1 {
+        ProtoChunk chunk = new ProtoChunk(new ChunkPos(chunkX, chunkZ), UpgradeData.EMPTY,
+                world.heightAccessor, PalettedContainerFactory.create(world.data.generationRegistries()),
+                null);
+        //?} else {
+        /*ProtoChunk chunk = new ProtoChunk(new ChunkPos(chunkX, chunkZ), UpgradeData.EMPTY,
+                world.heightAccessor, world.data.registries().registryOrThrow(Registries.BIOME), null);*/
+        //?}
+        StructureManager manager = new StructureManager(null, new WorldOptions(world.seed, true, false),
+                null);
+        //? if >=26.1 {
+        world.chunkGenerator.createStructures(world.data.generationRegistries(), state, manager, chunk,
+                world.templates, Level.OVERWORLD);
+        //?} else {
+        /*world.chunkGenerator.createStructures(world.data.generationRegistries(), state, manager, chunk,
+                world.templates);*/
+        //?}
+        String built = null;
+        for (java.util.Map.Entry<Structure, StructureStart> start : chunk.getAllStarts().entrySet()) {
+            if (!start.getValue().isValid()) {
+                continue;
+            }
+            assertEquals(null, built, "more than one start in one chunk");
+            final Structure structure = start.getKey();
+            String id = keyName(world.data.registries().lookupOrThrow(Registries.STRUCTURE)
+                    .listElements().filter(holder -> holder.value() == structure).findFirst()
+                    .orElseThrow(() -> new AssertionError("unregistered structure")).key());
+            built = id.substring(id.indexOf(':') + 1);
+        }
+        return built;
+    }
+
+    static void assertSameBox(BoundingBox expected, BoundingBox actual, String what) {
         assertEquals(expected.minX() + "," + expected.minY() + "," + expected.minZ() + " .. "
                         + expected.maxX() + "," + expected.maxY() + "," + expected.maxZ(),
                 actual.minX() + "," + actual.minY() + "," + actual.minZ() + " .. "
                         + actual.maxX() + "," + actual.maxY() + "," + actual.maxZ(), what);
     }
 
-    private static void assertPiecesSpan(StructureBounds bounds, List<StructurePiece> pieces,
-                                         String where) {
+    static void assertPiecesSpan(StructureBounds bounds, List<StructurePiece> pieces,
+                                 String where) {
         assertFalse(pieces.isEmpty(), where + ": vanilla generated no pieces");
         boolean[] touched = new boolean[6];
         for (StructurePiece piece : pieces) {
@@ -1169,7 +1503,12 @@ class StructureBiomeValidatorTest {
     private static boolean isJigsawType(StructureType type) {
         return type == StructureType.VILLAGE || type == StructureType.ANCIENT_CITY
                 || type == StructureType.TRIAL_CHAMBER || type == StructureType.PILLAGER_OUTPOST
-                || type == StructureType.TRAIL_RUINS || type == StructureType.MINESHAFT;
+                || type == StructureType.TRAIL_RUINS || type == StructureType.MINESHAFT
+                || type == StructureType.WOODLAND_MANSION || type == StructureType.RUINED_PORTAL;
+    }
+
+    static String setPathFor(StructureType type) {
+        return setPathOf(type);
     }
 
     private static String setPathOf(StructureType type) {
@@ -1200,16 +1539,22 @@ class StructureBiomeValidatorTest {
                 return "mineshafts";
             case TRAIL_RUINS:
                 return "trail_ruins";
+            case OCEAN_MONUMENT:
+                return "ocean_monuments";
+            case WOODLAND_MANSION:
+                return "woodland_mansions";
+            case RUINED_PORTAL:
+                return "ruined_portals";
             default:
                 throw new AssertionError(type);
         }
     }
 
-    private static GenerationPoint pointOf(BlockPos position) {
+    static GenerationPoint pointOf(BlockPos position) {
         return new GenerationPoint(position.getX(), position.getY(), position.getZ());
     }
 
-    private static Predicate<Holder<Biome>> predicateFor(StructureType type, String variant) {
+    static Predicate<Holder<Biome>> predicateFor(StructureType type, String variant) {
         final Set<String> accepted = StructureBiomeValidator.acceptedBiomes(type, variant);
         return holder -> {
             ResourceKey<Biome> key = holder.unwrapKey().orElse(null);
@@ -1217,25 +1562,43 @@ class StructureBiomeValidatorTest {
         };
     }
 
-    private static VanillaStructureData structureData() {
+    private static boolean staticTagsBound;
+
+    static VanillaStructureData structureData() {
         assertEquals(LazyInit.State.READY, VanillaStructureData.loadIfNeeded(),
                 "the vanilla data pack must load on the test classpath");
-        return VanillaStructureData.get();
+        VanillaStructureData data = VanillaStructureData.get();
+        if (!staticTagsBound) {
+            //? if >=26.1 {
+            // In game the server binds the block tags a ruined portal's processors read; a bare
+            // test JVM has nobody to do it.
+            data.bindStaticTagsLikeAWorldDoes();
+            //?} else {
+            /*// Likewise the biome tags, which 1.20.1 leaves unbound in loaded registries and a
+            // server binds on reload. Only the oracle's own createStructures reads them - production
+            // tests biomes against the data pack's sets, never through a tag.
+            data.bindBiomeTagsLikeAWorldDoes();*/
+            //?}
+            staticTagsBound = true;
+        }
+        return data;
     }
 
     /**
      * A generation context of the test's own over the loaded data pack: separate template manager,
      * noise and chunk generator from anything production built, sharing only the frozen registries.
+     * Built from the overworld's vanilla noise settings, biome preset and dimension type, read here
+     * rather than through production's helpers.
      */
-    private static final class LoadedWorld {
+    static final class LoadedWorld {
 
-        private final VanillaStructureData data;
-        private final long seed;
-        private final StructureTemplateManager templates;
-        private final RandomState randomState;
-        private final BiomeSource biomeSource;
-        private final ChunkGenerator chunkGenerator;
-        private final LevelHeightAccessor heightAccessor;
+        final VanillaStructureData data;
+        final long seed;
+        final StructureTemplateManager templates;
+        final RandomState randomState;
+        final BiomeSource biomeSource;
+        final ChunkGenerator chunkGenerator;
+        final LevelHeightAccessor heightAccessor;
 
         LoadedWorld(long seed) throws Exception {
             this.data = structureData();
@@ -1250,8 +1613,11 @@ class StructureBiomeValidatorTest {
                     data.registries().lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST)
                             .getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD));
             this.chunkGenerator = new NoiseBasedChunkGenerator(biomeSource, settings);
-            this.heightAccessor = LevelHeightAccessor.create(
-                    settings.value().noiseSettings().minY(), settings.value().noiseSettings().height());
+            net.minecraft.world.level.dimension.DimensionType dimension = data.registries()
+                    .lookupOrThrow(Registries.DIMENSION_TYPE)
+                    .getOrThrow(net.minecraft.world.level.dimension.BuiltinDimensionTypes.OVERWORLD)
+                    .value();
+            this.heightAccessor = LevelHeightAccessor.create(dimension.minY(), dimension.height());
         }
 
         Holder<Structure> structure(final String variant) {
@@ -1263,9 +1629,9 @@ class StructureBiomeValidatorTest {
 
         Structure.GenerationContext context(int chunkX, int chunkZ,
                                             Predicate<Holder<Biome>> biomes) {
-            return new Structure.GenerationContext(data.registries(), chunkGenerator, biomeSource,
-                    randomState, templates, seed, new ChunkPos(chunkX, chunkZ), heightAccessor,
-                    biomes);
+            return new Structure.GenerationContext(data.generationRegistries(), chunkGenerator,
+                    biomeSource, randomState, templates, seed, new ChunkPos(chunkX, chunkZ),
+                    heightAccessor, biomes);
         }
 
         /** Vanilla's full Structure.generate, pieces and all. */
@@ -1278,11 +1644,12 @@ class StructureBiomeValidatorTest {
                              Predicate<Holder<Biome>> biomes) {
             Holder<Structure> holder = structure(variant);
             //? if >=26.1 {
-            return holder.value().generate(holder, Level.OVERWORLD, data.registries(),
+            return holder.value().generate(holder, Level.OVERWORLD,
+                    data.generationRegistries(),
                     chunkGenerator, biomeSource, randomState, templates, seed,
                     new ChunkPos(chunkX, chunkZ), 0, heightAccessor, biomes);
             //?} else {
-            /*return holder.value().generate(data.registries(), chunkGenerator, biomeSource,
+            /*return holder.value().generate(data.generationRegistries(), chunkGenerator, biomeSource,
                     randomState, templates, seed, new ChunkPos(chunkX, chunkZ), 0, heightAccessor,
                     biomes);*/
             //?}
@@ -1334,9 +1701,58 @@ class StructureBiomeValidatorTest {
                 return StructureFeature.BURIED_TREASURE;
             case MINESHAFT:
                 return StructureFeature.MINESHAFT;
+            case OCEAN_MONUMENT:
+                return StructureFeature.OCEAN_MONUMENT;
+            case WOODLAND_MANSION:
+                return StructureFeature.WOODLAND_MANSION;
+            case RUINED_PORTAL:
+                return StructureFeature.RUINED_PORTAL;
             default:
                 return null;
         }
+    }
+
+    @Test
+    void everyOverworldBiomeListsARuinedPortal() {
+        // Why a 1.16.5 ruined portal candidate is never refused on biome: every biome the overworld
+        // source can return lists one of the seven portal configurations.
+        for (Biome biome : new OverworldBiomeSource(SEED, false, false, BuiltinRegistries.BIOME)
+                .possibleBiomes()) {
+            assertTrue(biome.getGenerationSettings().isValidStart(StructureFeature.RUINED_PORTAL),
+                    BuiltinRegistries.BIOME.getKey(biome) + " lists no ruined portal");
+        }
+    }
+
+    /^* The two whose isFeatureChunk override tests an area of biomes, reproduced by the validator. ^/
+    private static boolean hasAreaTest(StructureType type) {
+        return type == StructureType.OCEAN_MONUMENT || type == StructureType.WOODLAND_MANSION;
+    }
+
+    @Test
+    void noBiomeListsTwoConfigurationsOfOneStructure() {
+        // Why 1.16.5 has no selection order to reproduce, and no variant ambiguity: its mineshaft
+        // (normal or mesa) and ruined portal (seven kinds) configurations are separate
+        // ConfiguredStructureFeatures of one StructureFeature, createStructures samples one biome
+        // at a fixed quart, and that biome's list names at most one configuration per feature. So
+        // exactly one configuration is ever tried, and which one is the biome's.
+        int listing = 0;
+        for (Biome biome : BuiltinRegistries.BIOME) {
+            java.util.Map<StructureFeature<?>, Integer> perFeature =
+                    new java.util.HashMap<StructureFeature<?>, Integer>();
+            for (java.util.function.Supplier<ConfiguredStructureFeature<?, ?>> supplier
+                    : biome.getGenerationSettings().structures()) {
+                perFeature.merge(supplier.get().feature, 1, Integer::sum);
+            }
+            for (StructureType type : placements.types()) {
+                Integer count = perFeature.get(vanillaFeature(type));
+                assertTrue(count == null || count == 1, BuiltinRegistries.BIOME.getKey(biome)
+                        + " lists " + count + " configurations of " + type);
+            }
+            if (perFeature.containsKey(StructureFeature.MINESHAFT)) {
+                listing++;
+            }
+        }
+        assertTrue(listing > 0, "no biome lists a mineshaft at all");
     }
 
     @Test
@@ -1367,12 +1783,16 @@ class StructureBiomeValidatorTest {
                 StructureValidation result = StructureBiomeValidator
                         .validate(session, type, candidate[0], candidate[1]);
 
-                assertEquals(vanillaAccepts, result.isCompatible(), type + " at chunk "
-                        + candidate[0] + "," + candidate[1]
-                        + " biome " + registry.getKey(biome));
+                // A structure with an area test may still refuse a candidate whose own biome
+                // accepts it; nothingAfterTheBiomeCheckCanRejectAStart holds that half to vanilla.
+                if (!vanillaAccepts || !hasAreaTest(type)) {
+                    assertEquals(vanillaAccepts, result.isCompatible(), type + " at chunk "
+                            + candidate[0] + "," + candidate[1]
+                            + " biome " + registry.getKey(biome));
+                }
                 // 1.16.5 samples a fixed position at a literal height, so nothing here is ever
                 // undecidable and the two answers are complements rather than three-way.
-                assertEquals(!vanillaAccepts, result.isRejected(), type + " at chunk "
+                assertEquals(!result.isCompatible(), result.isRejected(), type + " at chunk "
                         + candidate[0] + "," + candidate[1]);
                 compared++;
             }
@@ -1404,9 +1824,9 @@ class StructureBiomeValidatorTest {
                     }
                 }
             }
-            if (placements.get(type).hasRestrictions()) {
+            if (placements.get(type).hasRestrictions() || hasAreaTest(type)) {
                 assertNotEquals(StructureFeature.class, declaring,
-                        type + " is modelled with restrictions vanilla no longer has");
+                        type + " is modelled with a predicate vanilla no longer has");
             } else {
                 assertEquals(StructureFeature.class, declaring,
                         type + " overrides isFeatureChunk, so an unmodelled predicate now exists");
@@ -1527,7 +1947,9 @@ class StructureBiomeValidatorTest {
                 StructureFeature<?> feature = vanillaFeature(type);
                 StructurePlacementConfig config = placements.get(type);
                 int[] counts = tally.computeIfAbsent(type, key -> new int[3]);
-                for (int[] candidate : oracleCandidates(config, 25, 10, seed)) {
+                boolean rare = hasAreaTest(type);
+                for (int[] candidate : oracleCandidates(config, rare ? 120 : 25, rare ? 30 : 10,
+                        seed)) {
                     boolean ours = StructureBiomeValidator
                             .validate(seedSession, type, candidate[0], candidate[1]).isCompatible();
                     StructureStart<?> start = legacyStart(biomeSource, generator, seed, feature,
@@ -1571,8 +1993,11 @@ class StructureBiomeValidatorTest {
                     + " refused-by-restriction chunks confirmed empty");
             // A refusal is compared either among the candidates or among the chunks the restrictions
             // refused: 1.16.5 lets the mineshaft start in nearly every overworld biome, so for it
-            // the second is the only kind a run is guaranteed to meet.
-            assertTrue(counts[1] > 0 && (counts[1] < counts[0] || counts[2] > 0),
+            // the second is the only kind a run is guaranteed to meet. The ruined portal starts in
+            // every biome the overworld source can produce - asserted below - so it has no refusal
+            // to compare at all, and a run where every candidate generated is the right answer.
+            boolean everyBiome = entry.getKey() == StructureType.RUINED_PORTAL;
+            assertTrue(counts[1] > 0 && (counts[1] < counts[0] || counts[2] > 0 || everyBiome),
                     entry.getKey() + ": both outcomes must be compared");
         }
     }
@@ -1590,6 +2015,13 @@ class StructureBiomeValidatorTest {
         startTimeGeometryIsVanillasOwnStructureStart(StructureType.MINESHAFT, 2);
     }
 
+    @Test
+    void mansionPortalAndMonumentGeometryIsVanillasOwnStructureStart() {
+        startTimeGeometryIsVanillasOwnStructureStart(StructureType.RUINED_PORTAL, 2);
+        startTimeGeometryIsVanillasOwnStructureStart(StructureType.OCEAN_MONUMENT, 2);
+        startTimeGeometryIsVanillasOwnStructureStart(StructureType.WOODLAND_MANSION, 1);
+    }
+
     /^*
      * Production builds its own start on the session's biome source and its own template manager;
      * the oracle is the start built here, independently, by the same vanilla call
@@ -1598,9 +2030,10 @@ class StructureBiomeValidatorTest {
      ^/
     private static void startTimeGeometryIsVanillasOwnStructureStart(StructureType type, int wanted) {
         int compared = 0;
-        boolean bearded = type != StructureType.MINESHAFT;
+        boolean bearded = type == StructureType.VILLAGE || type == StructureType.PILLAGER_OUTPOST;
         int inflation = bearded ? 12 : 0;
-        for (int[] candidate : candidates(placements.get(type), 400)) {
+        int pool = type == StructureType.WOODLAND_MANSION ? 4000 : 400;
+        for (int[] candidate : candidates(placements.get(type), pool)) {
             if (compared >= wanted) {
                 break;
             }

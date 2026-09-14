@@ -1,7 +1,11 @@
 package com.scrimchic.seedchecker.platform;
 
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.Set;
 
 import com.scrimchic.seedchecker.worldgen.biome.BiomeSampleLevel;
 
@@ -75,6 +79,9 @@ public final class BiomeWorldgenSession {
 
     private final long seed;
 
+    /** Built on first use; the session is thread confined, so no lock. */
+    private Set<String> possibleBiomeIds;
+
     /**
      * The coarsest sample step this version can both generate and draw without the map costing
      * more than it is worth. Two measured constraints, and the tighter one wins.
@@ -135,6 +142,24 @@ public final class BiomeWorldgenSession {
 
     public long seed() {
         return seed;
+    }
+
+    /**
+     * Every biome this session's biome source can return - vanilla's
+     * {@code BiomeSource.possibleBiomes()} - as ids.
+     *
+     * <p>The proof an entry can never start here: a biome test, wherever its position lands, only
+     * ever sees one of these. Computed once per session.
+     */
+    public Set<String> possibleBiomeIds() {
+        if (possibleBiomeIds == null) {
+            Set<String> ids = new HashSet<String>();
+            for (Object biome : possibleBiomesRaw()) {
+                ids.add(resolveId(biome));
+            }
+            possibleBiomeIds = Collections.unmodifiableSet(ids);
+        }
+        return possibleBiomeIds;
     }
 
     /**
@@ -273,6 +298,15 @@ public final class BiomeWorldgenSession {
                 heightAccessor, randomState);
     }
 
+    /**
+     * {@code getFirstOccupiedHeight(x, z, OCEAN_FLOOR_WG, ...)}: where {@code onTopOfChunkCenter}
+     * anchors an ocean-floor structure. As expensive as {@link #surfaceOccupiedHeight}.
+     */
+    public int oceanFloorOccupiedHeight(int blockX, int blockZ) {
+        return terrain.getFirstOccupiedHeight(blockX, blockZ, Heightmap.Types.OCEAN_FLOOR_WG,
+                heightAccessor, randomState);
+    }
+
     /** The dimension's sea level, which some structures refuse to generate below. */
     public int seaLevel() {
         return seaLevel;
@@ -364,6 +398,10 @@ public final class BiomeWorldgenSession {
         return biomeSource.getNoiseBiome(quartX, quartY, quartZ, climate);
     }
 
+    private Collection<?> possibleBiomesRaw() {
+        return biomeSource.possibleBiomes();
+    }
+
     @SuppressWarnings("unchecked")
     private static String readId(Object biome) {
         ResourceKey<Biome> key = ((Holder<Biome>) biome).unwrapKey().orElse(null);
@@ -392,6 +430,10 @@ public final class BiomeWorldgenSession {
 
     private Object sampleRaw(int quartX, int quartY, int quartZ) {
         return biomeSource.getNoiseBiome(quartX, quartY, quartZ);
+    }
+
+    private Collection<?> possibleBiomesRaw() {
+        return biomeSource.possibleBiomes();
     }
 
     /^* This session's biome source, for building a structure start from it on this worker. ^/

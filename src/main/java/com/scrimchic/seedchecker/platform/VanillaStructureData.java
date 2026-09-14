@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
+import java.util.stream.Stream;
 
 import com.scrimchic.seedchecker.SeedChecker;
 import com.scrimchic.seedchecker.core.util.LazyInit;
@@ -39,6 +40,8 @@ import net.minecraft.core.LayeredRegistryAccess;
 import net.minecraft.core.Registry;
 import net.minecraft.server.RegistryLayer;
 import net.minecraft.tags.TagLoader;
+//?} else if >=1.18 {
+/*import net.minecraft.tags.TagLoader;*/
 //?}
 
 /**
@@ -91,12 +94,14 @@ public final class VanillaStructureData {
 
     private final CloseableResourceManager resources;
     private final RegistryAccess.Frozen registries;
+    private final RegistryAccess generationRegistries;
     private final Map<String, Structure> structuresById;
 
     private VanillaStructureData(CloseableResourceManager resources, RegistryAccess.Frozen registries,
                                  Map<String, Structure> structuresById) {
         this.resources = resources;
         this.registries = registries;
+        this.generationRegistries = withStaticRegistries(registries);
         this.structuresById = structuresById;
     }
 
@@ -170,6 +175,20 @@ public final class VanillaStructureData {
         return registries;
     }
 
+    /**
+     * The registries a structure is generated against: the loaded worldgen registries and, on 26.x,
+     * the static ones beside them.
+     *
+     * <p>26.2's {@code RuinedPortalPiece} asks its generation context for the block registry and its
+     * {@code features_cannot_replace} tag while building its processors - which decide blocks, not
+     * where the piece is. The worldgen registries alone have no block registry, so the static
+     * registries are added. Their tags are whatever the game has bound, which in a world is the
+     * server's; nothing here binds or replaces them.
+     */
+    RegistryAccess generationRegistries() {
+        return generationRegistries;
+    }
+
     /** @return the structure with that id, e.g. {@code minecraft:ancient_city}, or {@code null}. */
     Structure structure(String structureId) {
         return structuresById.get(structureId);
@@ -240,6 +259,23 @@ public final class VanillaStructureData {
     }
 
     //? if >=26.1 {
+    private static RegistryAccess withStaticRegistries(RegistryAccess.Frozen worldgen) {
+        return new RegistryAccess.ImmutableRegistryAccess(Stream.concat(
+                RegistryAccess.fromRegistryOfRegistries(BuiltInRegistries.REGISTRY).registries(),
+                worldgen.registries())).freeze();
+    }
+
+    /**
+     * Tests only. Binds the vanilla data pack's tags onto the static registries, which joining a world
+     * does in game and a bare test JVM never does. Production must not call this: in a world it
+     * would replace the tags the server sent.
+     */
+    void bindStaticTagsLikeAWorldDoes() {
+        TagLoader.loadTagsForExistingRegistries(resources,
+                RegistryLayer.createRegistryAccess().getLayer(RegistryLayer.STATIC))
+                .forEach(Registry.PendingTags::apply);
+    }
+
     private static HolderGetter<Block> blockLookup() {
         // 26.x made Registry a HolderLookup.RegistryLookup itself.
         return BuiltInRegistries.BLOCK;
@@ -264,7 +300,41 @@ public final class VanillaStructureData {
                 Runnable::run).join();
     }
     //?} else {
-    /*private static HolderGetter<Block> blockLookup() {
+    /*private static RegistryAccess withStaticRegistries(RegistryAccess.Frozen worldgen) {
+        // 1.20.1's structures never ask their context for a static registry.
+        return worldgen;
+    }
+
+    /^*
+     * Tests only. Binds the data pack's biome tags onto the loaded biome registry, as a server's
+     * reload does and this loader does not, so a test can run vanilla's own createStructures - whose
+     * biome predicate is the structure's tag - as an oracle. Production never reads a biome tag
+     * through these registries, and must not call this.
+     ^/
+    void bindBiomeTagsLikeAWorldDoes() {
+        net.minecraft.core.Registry<net.minecraft.world.level.biome.Biome> biomes =
+                registries.registryOrThrow(Registries.BIOME);
+        Map<net.minecraft.resources.ResourceLocation,
+                java.util.Collection<net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome>>> loaded =
+                new TagLoader<net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome>>(
+                        id -> biomes.getHolder(ResourceKey.create(Registries.BIOME, id)),
+                        net.minecraft.tags.TagManager.getTagDir(Registries.BIOME))
+                        .loadAndBuild(resources);
+        Map<net.minecraft.tags.TagKey<net.minecraft.world.level.biome.Biome>,
+                List<net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome>>> bound =
+                new HashMap<net.minecraft.tags.TagKey<net.minecraft.world.level.biome.Biome>,
+                        List<net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome>>>();
+        for (Map.Entry<net.minecraft.resources.ResourceLocation,
+                java.util.Collection<net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome>>> tag
+                : loaded.entrySet()) {
+            bound.put(net.minecraft.tags.TagKey.create(Registries.BIOME, tag.getKey()),
+                    new java.util.ArrayList<net.minecraft.core.Holder<net.minecraft.world.level.biome.Biome>>(
+                            tag.getValue()));
+        }
+        biomes.bindTags(bound);
+    }
+
+    private static HolderGetter<Block> blockLookup() {
         return BuiltInRegistries.BLOCK.asLookup();
     }
 

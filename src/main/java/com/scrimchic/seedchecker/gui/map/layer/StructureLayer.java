@@ -36,7 +36,7 @@ import com.scrimchic.seedchecker.worldgen.biome.BiomeMapKey;
 public final class StructureLayer implements StructureMarkerLayer {
 
     /** Region scan budget per frame. At ~0.2 us per region this stays well under a millisecond. */
-    private static final long MAX_REGIONS = 2048L;
+    static final long MAX_REGIONS = 2048L;
 
     /**
      * The budget for a set of spacing 1 - the buried treasure and the mineshaft - whose regions are
@@ -44,13 +44,13 @@ public final class StructureLayer implements StructureMarkerLayer {
      * them stay under a millisecond, and the two layers then draw a 128 by 128 chunk view rather
      * than asking to zoom in past 45 by 45.
      */
-    private static final long MAX_CHUNK_REGIONS = 16384L;
+    static final long MAX_CHUNK_REGIONS = 16384L;
 
     /** Marker budget per frame, so a very wide view cannot flood the draw calls. */
     private static final int MAX_MARKERS = 1024;
 
     /** Markers never shrink below this, so a candidate stays visible when zoomed out. */
-    private static final int MIN_MARKER_PIXELS = 5;
+    static final int MIN_MARKER_PIXELS = 5;
 
     private static final int BORDER_COLOR = 0xFF0B0E11;
 
@@ -122,6 +122,12 @@ public final class StructureLayer implements StructureMarkerLayer {
                 return 0xFF9C7654;
             case TRAIL_RUINS:
                 return 0xFFC98F6B;
+            case OCEAN_MONUMENT:
+                return 0xFF55D4E0;
+            case WOODLAND_MANSION:
+                return 0xFF7A5230;
+            case RUINED_PORTAL:
+                return 0xFFD65BB2;
             default:
                 return 0xFFCCCCCC;
         }
@@ -148,10 +154,32 @@ public final class StructureLayer implements StructureMarkerLayer {
             return "needs a known seed";
         }
         long budget = config.spacing() == 1 ? MAX_CHUNK_REGIONS : MAX_REGIONS;
-        if (StructurePlacementEngine.regionCount(config, visible) > budget) {
+        if (StructurePlacementEngine.regionCount(config, visible) > budget
+                || isTooDenseToDraw(config, viewport.getScale())) {
             return "zoom in";
         }
         return null;
+    }
+
+    /** The drawn marker's side in pixels, as {@link #render} draws it. */
+    static int markerPixels(double scale) {
+        return 2 * (Math.max(MIN_MARKER_PIXELS, (int) Math.round(scale * ChunkRange.CHUNK_SIZE)) / 2);
+    }
+
+    /**
+     * Whether this layer's own markers could overlap at that zoom.
+     *
+     * <p>Two grid chunks of neighbouring regions are at least {@code separation + 1} chunks apart
+     * on the axis the regions differ in, whatever the spread. When that gap is narrower on screen
+     * than a marker, markers of the same structure start covering each other: measured at 1 px per
+     * 64 blocks, a 320 by 240 view drew 9,302 raw candidates of which 1,142 overlapped within their
+     * own layer, and not one from 1 px per 16 blocks on. The layer then says "zoom in" rather than
+     * drawing a smear, the way the region budget already does. Markers at an exact generation point
+     * sit up to a few tens of blocks off the chunk centre, which this does not account for.
+     */
+    static boolean isTooDenseToDraw(StructurePlacementConfig config, double scale) {
+        double gapPixels = (config.separation() + 1) * ChunkRange.CHUNK_SIZE * scale;
+        return gapPixels < markerPixels(scale);
     }
 
     @Override

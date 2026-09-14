@@ -102,14 +102,25 @@ public final class StructurePlacements {
                 SpreadType.LINEAR, 0.01F, FrequencyReduction.LEGACY_TYPE_2, null));
         placements.put(StructureType.MINESHAFT, new StructurePlacementConfig(1, 0, 0,
                 SpreadType.LINEAR, 0.004F, FrequencyReduction.LEGACY_TYPE_3, null));
+        // The last three. 1.16.5 marks the monument and the mansion triangular by overriding
+        // linearSeparation to false; the modern sets say spread_type triangular.
+        put(placements, StructureType.OCEAN_MONUMENT, 32, 5, 10387313, SpreadType.TRIANGULAR);
+        put(placements, StructureType.WOODLAND_MANSION, 80, 20, 10387319, SpreadType.TRIANGULAR);
+        put(placements, StructureType.RUINED_PORTAL, 40, 15, 34222645);
     }
 
     /** A set with nothing but its grid, in the codec's default spread. */
     private static StructurePlacementConfig put(Map<StructureType, StructurePlacementConfig> placements,
                                                 StructureType type, int spacing, int separation,
                                                 int salt) {
+        return put(placements, type, spacing, separation, salt, SpreadType.LINEAR);
+    }
+
+    private static StructurePlacementConfig put(Map<StructureType, StructurePlacementConfig> placements,
+                                                StructureType type, int spacing, int separation,
+                                                int salt, SpreadType spread) {
         StructurePlacementConfig config =
-                new StructurePlacementConfig(spacing, separation, salt, SpreadType.LINEAR);
+                new StructurePlacementConfig(spacing, separation, salt, spread);
         placements.put(type, config);
         return config;
     }

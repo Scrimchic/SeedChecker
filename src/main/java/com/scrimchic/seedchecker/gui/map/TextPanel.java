@@ -10,6 +10,10 @@ import java.util.List;
  * positions in one place and draw them in another, which is exactly the kind of duplicated
  * arithmetic that drifts apart. A panel is rebuilt each frame, remembers where it last drew
  * itself, and answers {@link #actionAt} for clicks that arrive between frames.
+ *
+ * <p>A panel may be given a maximum height. It then draws the rows that fit from a scroll offset,
+ * with a thin bar showing where it is, so a long panel on a small window stays usable instead of
+ * running off the screen.
  */
 public final class TextPanel {
 
@@ -18,15 +22,24 @@ public final class TextPanel {
 
     private static final int PADDING = 4;
 
+    private static final int SCROLLBAR_TRACK = 0x40FFFFFF;
+    private static final int SCROLLBAR_THUMB = 0xB0FFFFFF;
+
     private final int backgroundColor;
     private final int hoverColor;
     private final List<Row> rows = new ArrayList<Row>();
+
+    private int maxHeight = Integer.MAX_VALUE;
+    private int requestedFirstRow;
 
     private boolean drawn;
     private int drawnLeft;
     private int drawnTop;
     private int drawnRight;
+    private int drawnBottom;
     private int drawnLineHeight;
+    private int drawnFirstRow;
+    private int drawnVisibleRows;
 
     public TextPanel(int backgroundColor, int hoverColor) {
         this.backgroundColor = backgroundColor;
@@ -53,8 +66,20 @@ public final class TextPanel {
         return this;
     }
 
+    /**
+     * Caps the panel's height, scrolled to a row; both are clamped when the panel is drawn.
+     *
+     * @param maxHeightPixels the tallest the panel may be, padding included
+     * @param firstRow        the row to start from, as remembered from {@link #firstRow()}
+     */
+    public TextPanel limitHeight(int maxHeightPixels, int firstRow) {
+        this.maxHeight = maxHeightPixels;
+        this.requestedFirstRow = firstRow;
+        return this;
+    }
+
     public int height(MapCanvas canvas) {
-        return rows.size() * lineHeight(canvas) + PADDING * 2;
+        return visibleRows(lineHeight(canvas)) * lineHeight(canvas) + PADDING * 2;
     }
 
     /** The width the panel will take, so a caller can right-align it before drawing. */
@@ -72,6 +97,7 @@ public final class TextPanel {
      */
     public void draw(MapCanvas canvas, int left, int top, double mouseX, double mouseY) {
         int lineHeight = lineHeight(canvas);
+        int visible = visibleRows(lineHeight);
 
         // Recorded before anything is drawn so that hover highlighting below, and the click that
         // may follow, both read this frame's geometry.
@@ -79,15 +105,30 @@ public final class TextPanel {
         drawnLeft = left;
         drawnTop = top;
         drawnRight = left + width(canvas);
+        drawnBottom = top + height(canvas);
         drawnLineHeight = lineHeight;
+        drawnVisibleRows = visible;
+        drawnFirstRow = RowWindow.clampFirstRow(requestedFirstRow, rows.size(), visible);
 
-        canvas.fill(left, top, drawnRight, top + height(canvas), backgroundColor);
+        canvas.fill(left, top, drawnRight, drawnBottom, backgroundColor);
 
         int hovered = actionAt(mouseX, mouseY);
-        for (int i = 0; i < rows.size(); i++) {
-            Row row = rows.get(i);
+        for (int i = 0; i < visible; i++) {
+            Row row = rows.get(drawnFirstRow + i);
             int color = row.actionId != NO_ACTION && row.actionId == hovered ? hoverColor : row.color;
-            canvas.text(row.text, left + PADDING, rowTop(i), color);
+            canvas.text(row.text, left + PADDING, drawnTop + PADDING + i * lineHeight, color);
+        }
+
+        if (isScrollable()) {
+            int trackTop = top + PADDING;
+            int trackHeight = visible * lineHeight;
+            int thumbHeight = Math.max(4, trackHeight * visible / rows.size());
+            int thumbTop = trackTop
+                    + (trackHeight - thumbHeight) * drawnFirstRow / (rows.size() - visible);
+            canvas.fill(drawnRight - 2, trackTop, drawnRight - 1, trackTop + trackHeight,
+                    SCROLLBAR_TRACK);
+            canvas.fill(drawnRight - 2, thumbTop, drawnRight - 1, thumbTop + thumbHeight,
+                    SCROLLBAR_THUMB);
         }
     }
 
@@ -101,11 +142,32 @@ public final class TextPanel {
             return NO_ACTION;
         }
         int index = (int) (offset / drawnLineHeight);
-        return index < rows.size() ? rows.get(index).actionId : NO_ACTION;
+        if (index >= drawnVisibleRows) {
+            return NO_ACTION;
+        }
+        int row = drawnFirstRow + index;
+        return row < rows.size() ? rows.get(row).actionId : NO_ACTION;
     }
 
-    private int rowTop(int index) {
-        return drawnTop + PADDING + index * drawnLineHeight;
+    /** Whether the point is over the panel as last drawn. */
+    public boolean contains(double x, double y) {
+        return drawn && x >= drawnLeft && x < drawnRight && y >= drawnTop && y < drawnBottom;
+    }
+
+    /** The first row drawn last frame, clamped, for the caller to remember. */
+    public int firstRow() {
+        return drawnFirstRow;
+    }
+
+    /** Whether the last draw had more rows than it could show. */
+    public boolean isScrollable() {
+        return drawn && drawnVisibleRows < rows.size();
+    }
+
+    private int visibleRows(int lineHeight) {
+        return maxHeight == Integer.MAX_VALUE
+                ? rows.size()
+                : RowWindow.visibleRows(rows.size(), maxHeight, lineHeight, PADDING);
     }
 
     private static int lineHeight(MapCanvas canvas) {
