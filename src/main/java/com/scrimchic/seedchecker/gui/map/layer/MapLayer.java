@@ -18,6 +18,17 @@ public interface MapLayer {
     /** Name shown in the Seed Checker panel. */
     String displayName();
 
+    /**
+     * Whether this layer belongs to that dimension at all. A layer that does not is neither drawn
+     * nor listed there - a slime chunk or a village has no meaning in the nether - whereas
+     * {@link #unavailableReason} is for a layer that belongs but cannot draw right now.
+     *
+     * @param dimensionId the dimension being looked at, or {@code null} outside a world
+     */
+    default boolean appliesTo(String dimensionId) {
+        return true;
+    }
+
     boolean isEnabled();
 
     void setEnabled(boolean enabled);

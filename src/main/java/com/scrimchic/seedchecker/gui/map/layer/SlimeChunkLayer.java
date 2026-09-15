@@ -4,6 +4,7 @@ import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.gui.map.MapCanvas;
 import com.scrimchic.seedchecker.world.ActiveWorld;
+import com.scrimchic.seedchecker.world.DimensionType;
 import com.scrimchic.seedchecker.worldgen.SlimeChunkCalculator;
 
 /**
@@ -36,6 +37,15 @@ public final class SlimeChunkLayer implements MapLayer {
     @Override
     public String displayName() {
         return "Slime Chunks";
+    }
+
+    /**
+     * The overworld only. {@code isSlimeChunk} is seed arithmetic and would happily answer for any
+     * dimension, but slimes spawning by chunk is an overworld rule; the nether has none.
+     */
+    @Override
+    public boolean appliesTo(String dimensionId) {
+        return DimensionType.fromId(dimensionId) == DimensionType.OVERWORLD;
     }
 
     @Override

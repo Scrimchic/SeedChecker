@@ -9,6 +9,7 @@ import com.scrimchic.seedchecker.worldgen.GenerationPoint;
 import com.scrimchic.seedchecker.worldgen.StructureCandidateVisitor;
 import com.scrimchic.seedchecker.worldgen.StructurePlacementConfig;
 import com.scrimchic.seedchecker.worldgen.StructurePlacementEngine;
+import com.scrimchic.seedchecker.worldgen.StructurePlacements;
 import com.scrimchic.seedchecker.worldgen.StructureType;
 import com.scrimchic.seedchecker.worldgen.StructureValidation;
 import com.scrimchic.seedchecker.worldgen.StructureValidationKey;
@@ -72,7 +73,9 @@ public final class StructureLayer implements StructureMarkerLayer {
     private static boolean showRawCandidates;
 
     private final StructureType type;
-    private final StructurePlacementConfig config;
+
+    /** The version's placements; the grid is taken for the dimension being drawn. */
+    private final StructurePlacements placements;
     private final int color;
 
     /** Reused across frames; the render thread is the only thread that touches it. */
@@ -88,10 +91,15 @@ public final class StructureLayer implements StructureMarkerLayer {
         showRawCandidates = show;
     }
 
-    public StructureLayer(StructureType type, StructurePlacementConfig config) {
+    public StructureLayer(StructureType type, StructurePlacements placements) {
         this.type = type;
-        this.config = config;
+        this.placements = placements;
         this.color = colorOf(type);
+    }
+
+    /** The grid this layer's candidates sit on in the world's current dimension. */
+    private StructurePlacementConfig configIn(ActiveWorld world) {
+        return placements.get(type, world.context().dimensionId());
     }
 
     private static int colorOf(StructureType type) {
@@ -128,6 +136,12 @@ public final class StructureLayer implements StructureMarkerLayer {
                 return 0xFF7A5230;
             case RUINED_PORTAL:
                 return 0xFFD65BB2;
+            case NETHER_FORTRESS:
+                return 0xFFB8453A;
+            case BASTION_REMNANT:
+                return 0xFF3B3842;
+            case NETHER_FOSSIL:
+                return 0xFFE6DCC8;
             default:
                 return 0xFFCCCCCC;
         }
@@ -148,17 +162,35 @@ public final class StructureLayer implements StructureMarkerLayer {
         this.enabled = enabled;
     }
 
+    /** Only in the dimensions vanilla can start this structure in. */
+    @Override
+    public boolean appliesTo(String dimensionId) {
+        return type.generatesIn(dimensionId);
+    }
+
     @Override
     public String unavailableReason(ActiveWorld world, MapViewport viewport, ChunkRange visible) {
         if (!world.hasSeed()) {
             return "needs a known seed";
         }
-        long budget = config.spacing() == 1 ? MAX_CHUNK_REGIONS : MAX_REGIONS;
-        if (StructurePlacementEngine.regionCount(config, visible) > budget
-                || isTooDenseToDraw(config, viewport.getScale())) {
+        if (!appliesTo(world.context().dimensionId())) {
+            return "not in this dimension";
+        }
+        if (!isDrawableAt(configIn(world), visible, viewport.getScale())) {
             return "zoom in";
         }
         return null;
+    }
+
+    /**
+     * Whether a layer on that grid draws at that zoom, or says "zoom in": within the per-frame
+     * region budget, and not so dense that its own markers would overlap.
+     */
+    public static boolean isDrawableAt(StructurePlacementConfig config, ChunkRange visible,
+                                       double scale) {
+        long budget = config.spacing() == 1 ? MAX_CHUNK_REGIONS : MAX_REGIONS;
+        return StructurePlacementEngine.regionCount(config, visible) <= budget
+                && !isTooDenseToDraw(config, scale);
     }
 
     /** The drawn marker's side in pixels, as {@link #render} draws it. */
@@ -196,7 +228,7 @@ public final class StructureLayer implements StructureMarkerLayer {
         validation.useMap(map);
 
         final int[] requests = {0};
-        engine.forEachCandidate(world.seed(), config, visible, MAX_MARKERS,
+        engine.forEachCandidate(world.seed(), configIn(world), visible, MAX_MARKERS,
                 new StructureCandidateVisitor() {
                     @Override
                     public boolean visit(int chunkX, int chunkZ) {
@@ -233,7 +265,7 @@ public final class StructureLayer implements StructureMarkerLayer {
      */
     @Override
     public String describeAt(ActiveWorld world, int chunkX, int chunkZ) {
-        if (!world.hasSeed() || !isCandidate(world.seed(), chunkX, chunkZ)) {
+        if (!world.hasSeed() || !isCandidate(world, chunkX, chunkZ)) {
             return null;
         }
         StructureValidation result = resultAt(world, chunkX, chunkZ);
@@ -298,7 +330,8 @@ public final class StructureLayer implements StructureMarkerLayer {
      */
     @Override
     public boolean isMarkerAt(ActiveWorld world, int chunkX, int chunkZ) {
-        if (!enabled || !world.hasSeed() || !isCandidate(world.seed(), chunkX, chunkZ)) {
+        if (!enabled || !world.hasSeed() || !appliesTo(world.context().dimensionId())
+                || !isCandidate(world, chunkX, chunkZ)) {
             return false;
         }
         StructureValidation result = resultAt(world, chunkX, chunkZ);
@@ -316,8 +349,8 @@ public final class StructureLayer implements StructureMarkerLayer {
     }
 
     /** Whether vanilla lets this set try exactly this chunk: grid placement and restrictions. */
-    private boolean isCandidate(long seed, int chunkX, int chunkZ) {
-        return engine.isStructureChunk(seed, config, chunkX, chunkZ);
+    private boolean isCandidate(ActiveWorld world, int chunkX, int chunkZ) {
+        return engine.isStructureChunk(world.seed(), configIn(world), chunkX, chunkZ);
     }
 
     private void draw(MapCanvas canvas, MapViewport viewport, StructureValidation result,

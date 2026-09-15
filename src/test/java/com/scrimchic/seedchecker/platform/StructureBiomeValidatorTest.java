@@ -222,6 +222,10 @@ class StructureBiomeValidatorTest {
         int totalRejected = 0;
 
         for (StructureType type : placements.types()) {
+            if (!type.generatesIn(BiomeWorldgenSession.OVERWORLD)) {
+                // Asked of an overworld session; the nether's have NetherStructureTest.
+                continue;
+            }
             int shown = 0;
             int total = 0;
             for (int[] candidate : candidates(placements.get(type), 200)) {
@@ -1545,6 +1549,11 @@ class StructureBiomeValidatorTest {
                 return "woodland_mansions";
             case RUINED_PORTAL:
                 return "ruined_portals";
+            case NETHER_FORTRESS:
+            case BASTION_REMNANT:
+                return "nether_complexes";
+            case NETHER_FOSSIL:
+                return "nether_fossils";
             default:
                 throw new AssertionError(type);
         }
@@ -1707,6 +1716,12 @@ class StructureBiomeValidatorTest {
                 return StructureFeature.WOODLAND_MANSION;
             case RUINED_PORTAL:
                 return StructureFeature.RUINED_PORTAL;
+            case NETHER_FORTRESS:
+                return StructureFeature.NETHER_BRIDGE;
+            case BASTION_REMNANT:
+                return StructureFeature.BASTION_REMNANT;
+            case NETHER_FOSSIL:
+                return StructureFeature.NETHER_FOSSIL;
             default:
                 return null;
         }
@@ -1824,7 +1839,11 @@ class StructureBiomeValidatorTest {
                     }
                 }
             }
-            if (placements.get(type).hasRestrictions() || hasAreaTest(type)) {
+            // The fortress and the bastion override it with their shared nextInt(5) split, which the
+            // validator reproduces and NetherStructureTest holds to vanilla's generate.
+            boolean netherComplex = type == StructureType.NETHER_FORTRESS
+                    || type == StructureType.BASTION_REMNANT;
+            if (placements.get(type).hasRestrictions() || hasAreaTest(type) || netherComplex) {
                 assertNotEquals(StructureFeature.class, declaring,
                         type + " is modelled with a predicate vanilla no longer has");
             } else {

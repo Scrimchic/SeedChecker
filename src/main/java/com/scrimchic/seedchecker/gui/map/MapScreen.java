@@ -579,8 +579,13 @@ public final class MapScreen extends Screen {
                 "Raw candidates: " + (StructureLayer.showRawCandidates() ? "ON" : "OFF"),
                 StructureLayer.showRawCandidates() ? COLOR_TEXT : COLOR_TEXT_DIM);
         List<MapLayer> layers = LAYERS.all();
+        String dimensionId = world.context().dimensionId();
         for (int i = 0; i < layers.size(); i++) {
             MapLayer layer = layers.get(i);
+            if (!layer.appliesTo(dimensionId)) {
+                // Not listed at all; the action id stays the layer's index, so clicks still land.
+                continue;
+            }
             String reason = layer.unavailableReason(world, viewport, visible);
             panel.action(ACTION_LAYER_BASE + i,
                     layer.displayName() + ": " + layerState(layer, reason),
@@ -684,8 +689,10 @@ public final class MapScreen extends Screen {
     private void appendCursorStructures(TextPanel panel, int chunkX, int chunkZ) {
         ActiveWorld world = WorldProfileManager.get().currentWorld();
         List<MapLayer> layers = LAYERS.all();
+        String dimensionId = world.context().dimensionId();
         for (int i = 0; i < layers.size(); i++) {
-            if (!(layers.get(i) instanceof StructureMarkerLayer)) {
+            if (!(layers.get(i) instanceof StructureMarkerLayer)
+                    || !layers.get(i).appliesTo(dimensionId)) {
                 continue;
             }
             String description =
@@ -919,6 +926,7 @@ public final class MapScreen extends Screen {
         }
         List<MapLayer> layers = LAYERS.all();
         int layerIndex = action - ACTION_LAYER_BASE;
+        // Only rows that were listed can be clicked, and a row is listed only for its dimension.
         if (layerIndex >= 0 && layerIndex < layers.size()) {
             MapLayer layer = layers.get(layerIndex);
             layer.setEnabled(!layer.isEnabled());

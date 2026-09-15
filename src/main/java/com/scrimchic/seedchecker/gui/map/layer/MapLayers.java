@@ -34,7 +34,7 @@ public final class MapLayers {
 
         StructurePlacements placements = StructurePlacements.forThisVersion();
         for (StructureType type : placements.types()) {
-            created.add(new StructureLayer(type, placements.get(type)));
+            created.add(new StructureLayer(type, placements));
         }
         // Not grid placed, so not in StructurePlacements; every supported version has strongholds.
         created.add(new StrongholdLayer());
@@ -49,12 +49,14 @@ public final class MapLayers {
         return view;
     }
 
-    /** Draws every layer that is switched on and currently able to draw. */
+    /** Draws every layer of this dimension that is switched on and currently able to draw. */
     public void renderAll(MapCanvas canvas, MapViewport viewport, ChunkRange visible,
                           ActiveWorld world) {
+        String dimensionId = world.context().dimensionId();
         for (int i = 0; i < layers.size(); i++) {
             MapLayer layer = layers.get(i);
-            if (layer.isEnabled() && layer.unavailableReason(world, viewport, visible) == null) {
+            if (layer.appliesTo(dimensionId) && layer.isEnabled()
+                    && layer.unavailableReason(world, viewport, visible) == null) {
                 layer.render(canvas, viewport, visible, world);
             }
         }

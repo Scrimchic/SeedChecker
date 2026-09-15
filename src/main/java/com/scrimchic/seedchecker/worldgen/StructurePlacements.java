@@ -5,6 +5,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
+import com.scrimchic.seedchecker.world.DimensionType;
+
 /**
  * Which grid-placed structures the Minecraft version this jar was built for has, and with what
  * placement numbers.
@@ -39,8 +41,13 @@ public final class StructurePlacements {
 
     private final Map<StructureType, StructurePlacementConfig> byType;
 
-    private StructurePlacements(Map<StructureType, StructurePlacementConfig> byType) {
+    /** Where the nether's generator uses a different grid for a type than the overworld's. */
+    private final Map<StructureType, StructurePlacementConfig> netherGrids;
+
+    private StructurePlacements(Map<StructureType, StructurePlacementConfig> byType,
+                                Map<StructureType, StructurePlacementConfig> netherGrids) {
         this.byType = Collections.unmodifiableMap(byType);
+        this.netherGrids = Collections.unmodifiableMap(netherGrids);
     }
 
     /** The placements for the Minecraft version this jar targets. */
@@ -50,6 +57,8 @@ public final class StructurePlacements {
 
     private static StructurePlacements build() {
         Map<StructureType, StructurePlacementConfig> placements =
+                new LinkedHashMap<StructureType, StructurePlacementConfig>();
+        Map<StructureType, StructurePlacementConfig> netherGrids =
                 new LinkedHashMap<StructureType, StructurePlacementConfig>();
 
         //? if >=26.1 {
@@ -75,9 +84,14 @@ public final class StructurePlacements {
         put(placements, StructureType.DESERT_PYRAMID, 32, 8, 14357617);
         put(placements, StructureType.SHIPWRECK, 24, 4, 165745295);
         putRemainingOverworld(placements, village);
+        // Structure settings belong to the chunk generator on this version, and the nether's are
+        // not the defaults for every feature: NoiseGeneratorSettings.nether replaces the ruined
+        // portal's grid. From 1.18 one ruined_portals set places both dimensions' portals.
+        netherGrids.put(StructureType.RUINED_PORTAL,
+                new StructurePlacementConfig(25, 10, 34222645, SpreadType.LINEAR));
         *///?}
 
-        return new StructurePlacements(placements);
+        return new StructurePlacements(placements, netherGrids);
     }
 
     /**
@@ -107,6 +121,24 @@ public final class StructurePlacements {
         put(placements, StructureType.OCEAN_MONUMENT, 32, 5, 10387313, SpreadType.TRIANGULAR);
         put(placements, StructureType.WOODLAND_MANSION, 80, 20, 10387319, SpreadType.TRIANGULAR);
         put(placements, StructureType.RUINED_PORTAL, 40, 15, 34222645);
+        putNether(placements);
+    }
+
+    /**
+     * Phase 3H-2, the same numbers on all three targets.
+     *
+     * <p>The fortress and the bastion remnant are one grid. From 1.18 that is literally one structure
+     * set, {@code nether_complexes}, holding both as weighted entries; 1.16.5 gives
+     * {@code NETHER_BRIDGE} and {@code BASTION_REMNANT} two {@code StructureSettings.DEFAULTS}
+     * entries that agree field for field. Which of the two a grid chunk builds is not placement - the
+     * modern weighted draw with its fallback, or 1.16.5's two {@code isFeatureChunk} overrides - so
+     * both layers are handed the same grid and validation decides. The nether fossil's spacing of 2
+     * and separation of 1 put exactly one candidate at the minimum chunk of every 2 by 2 region.
+     */
+    private static void putNether(Map<StructureType, StructurePlacementConfig> placements) {
+        put(placements, StructureType.NETHER_FORTRESS, 27, 4, 30084232);
+        put(placements, StructureType.BASTION_REMNANT, 27, 4, 30084232);
+        put(placements, StructureType.NETHER_FOSSIL, 2, 1, 14357921);
     }
 
     /** A set with nothing but its grid, in the codec's default spread. */
@@ -134,8 +166,29 @@ public final class StructurePlacements {
         return byType.containsKey(type);
     }
 
-    /** @return the placement, or {@code null} when this version has no such structure. */
+    /**
+     * @return the overworld placement, or {@code null} when this version has no such structure. The
+     *         nether's may differ; see {@link #get(StructureType, String)}.
+     */
     public StructurePlacementConfig get(StructureType type) {
+        return byType.get(type);
+    }
+
+    /**
+     * The placement a type uses in one dimension: the grid that dimension's vanilla generator
+     * places it on. Differs from {@link #get(StructureType)} only where the version gives the
+     * nether a grid of its own - 1.16.5's ruined portal - which {@code NetherStructureTest} holds
+     * to the nether generator's settings.
+     *
+     * @return the placement, or {@code null} when this version has no such structure
+     */
+    public StructurePlacementConfig get(StructureType type, String dimensionId) {
+        if (DimensionType.fromId(dimensionId) == DimensionType.NETHER) {
+            StructurePlacementConfig nether = netherGrids.get(type);
+            if (nether != null) {
+                return nether;
+            }
+        }
         return byType.get(type);
     }
 }

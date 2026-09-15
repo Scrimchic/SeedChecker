@@ -159,12 +159,42 @@ class BiomeWorldgenSessionTest {
     }
 
     @Test
-    void onlyTheOverworldIsSupportedSoFar() {
+    void theOverworldAndTheNetherAreSupported() {
         assertTrue(BiomeWorldgenSession.supportsDimension(BiomeWorldgenSession.OVERWORLD));
-        assertFalse(BiomeWorldgenSession.supportsDimension("minecraft:the_nether"));
+        assertTrue(BiomeWorldgenSession.supportsDimension("minecraft:the_nether"));
         assertFalse(BiomeWorldgenSession.supportsDimension("minecraft:the_end"));
         assertFalse(BiomeWorldgenSession.supportsDimension(null));
 
-        assertNull(BiomeWorldgenSession.create(SEED, "minecraft:the_nether"));
+        assertNull(BiomeWorldgenSession.create(SEED, "minecraft:the_end"));
+        assertEquals(BiomeWorldgenSession.OVERWORLD, session.dimensionId());
     }
+
+    //? if >=1.18 {
+    @Test
+    void eachSessionHasItsDimensionsLevelHeight() {
+        // The overworld's level height was read from its noise settings before Phase 3H-2 and from
+        // its dimension type since; they must be the same numbers or overworld answers moved. The
+        // nether's differ - 128 blocks of terrain inside a 256 block level.
+        net.minecraft.core.HolderLookup.Provider registries =
+                net.minecraft.data.registries.VanillaRegistries.createLookup();
+        net.minecraft.world.level.levelgen.NoiseSettings noise = registries
+                .lookupOrThrow(net.minecraft.core.registries.Registries.NOISE_SETTINGS)
+                .getOrThrow(net.minecraft.world.level.levelgen.NoiseGeneratorSettings.OVERWORLD)
+                .value().noiseSettings();
+        net.minecraft.world.level.LevelHeightAccessor overworld =
+                BiomeWorldgenSession.heightAccessorOf(registries, BiomeWorldgenSession.OVERWORLD);
+        assertEquals(noise.minY() + "," + noise.height(), minY(overworld) + "," + overworld.getHeight());
+        net.minecraft.world.level.LevelHeightAccessor nether =
+                BiomeWorldgenSession.heightAccessorOf(registries, BiomeWorldgenSession.NETHER);
+        assertEquals("0,256", minY(nether) + "," + nether.getHeight());
+    }
+
+    private static int minY(net.minecraft.world.level.LevelHeightAccessor accessor) {
+        //? if >=26.1 {
+        return accessor.getMinY();
+        //?} else {
+        /*return accessor.getMinBuildHeight();*/
+        //?}
+    }
+    //?}
 }

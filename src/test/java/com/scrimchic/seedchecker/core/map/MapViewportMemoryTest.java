@@ -50,6 +50,29 @@ class MapViewportMemoryTest {
     }
 
     @Test
+    void eachDimensionKeepsItsOwnView() {
+        // Through a portal and back: each side comes back to where the map was left there, and
+        // neither side ever shows the other's coordinates.
+        MapViewportMemory memory = new MapViewportMemory();
+        memory.remember("world-a|minecraft:overworld", viewportAt(8000.0, -400.0, 1.0), false);
+        memory.remember("world-a|minecraft:the_nether", viewportAt(1000.0, -50.0, 0.25), true);
+
+        MapViewport overworld = viewportAt(0.0, 0.0, 4.0);
+        assertTrue(memory.restore("world-a|minecraft:overworld", overworld));
+        assertEquals(8000.0, overworld.getCenterBlockX(), 0.0001);
+        assertEquals(1.0, overworld.getScale(), 0.0001);
+        assertFalse(memory.followPlayer());
+
+        MapViewport nether = viewportAt(0.0, 0.0, 4.0);
+        assertTrue(memory.restore("world-a|minecraft:the_nether", nether));
+        assertEquals(1000.0, nether.getCenterBlockX(), 0.0001);
+        assertEquals(0.25, nether.getScale(), 0.0001);
+        assertTrue(memory.followPlayer());
+
+        assertFalse(memory.remembers("world-a|minecraft:the_end"));
+    }
+
+    @Test
     void followModeSurvivesReopening() {
         MapViewportMemory memory = new MapViewportMemory();
         assertFalse(memory.followPlayer());

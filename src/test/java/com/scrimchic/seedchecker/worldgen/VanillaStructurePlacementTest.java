@@ -324,6 +324,12 @@ class VanillaStructurePlacementTest {
                 return BuiltinStructureSets.WOODLAND_MANSIONS;
             case RUINED_PORTAL:
                 return BuiltinStructureSets.RUINED_PORTALS;
+            // One set for both: their placement is literally the same object.
+            case NETHER_FORTRESS:
+            case BASTION_REMNANT:
+                return BuiltinStructureSets.NETHER_COMPLEXES;
+            case NETHER_FOSSIL:
+                return BuiltinStructureSets.NETHER_FOSSILS;
             default:
                 return null;
         }
@@ -342,6 +348,14 @@ class VanillaStructurePlacementTest {
 
     private static boolean hasVanillaPlacement(StructureType type) {
         return vanillaPlacement(type) != null;
+    }
+
+    @Test
+    void theFortressAndTheBastionShareOneVanillaPlacement() {
+        assertTrue(vanillaPlacement(StructureType.NETHER_FORTRESS)
+                == vanillaPlacement(StructureType.BASTION_REMNANT));
+        assertEquals(placements.get(StructureType.NETHER_FORTRESS).toString(),
+                placements.get(StructureType.BASTION_REMNANT).toString());
     }
 
     private static int[] vanillaNumbers(StructureType type) {
@@ -466,6 +480,12 @@ class VanillaStructurePlacementTest {
                 return StructureFeature.WOODLAND_MANSION;
             case RUINED_PORTAL:
                 return StructureFeature.RUINED_PORTAL;
+            case NETHER_FORTRESS:
+                return StructureFeature.NETHER_BRIDGE;
+            case BASTION_REMNANT:
+                return StructureFeature.BASTION_REMNANT;
+            case NETHER_FOSSIL:
+                return StructureFeature.NETHER_FOSSIL;
             default:
                 return null;
         }

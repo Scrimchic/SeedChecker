@@ -24,6 +24,8 @@ import com.google.gson.JsonParser;
 import net.minecraft.data.BuiltinRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.levelgen.StructureSettings;
+import net.minecraft.world.level.levelgen.WorldgenRandom;
 import net.minecraft.world.level.levelgen.feature.StructureFeature;
 import net.minecraft.world.level.levelgen.structure.StructureStart;*/
 //?}
@@ -105,6 +107,35 @@ import net.minecraft.world.level.levelgen.structure.StructureStart;*/
  * centre over {@code OCEAN_FLOOR_WG}. The area test reads the tag through {@code Holder.is}, which
  * 1.20.1's loaded registries cannot answer, so it is reproduced here - every quart of the box, over
  * the resolved tag - and the anchor too, as for the surface structures.
+ *
+ * <h2>The nether (Phase 3H-2)</h2>
+ *
+ * <p>The session carries its dimension, so every position model above runs on the nether's own
+ * biome source, terrain and level height when the candidate is a nether one. What is specific to
+ * the nether is which entries can start, and three of its structures:
+ *
+ * <p><strong>The fortress and the bastion remnant: one set, one draw.</strong> From 1.18 both are
+ * entries of {@code nether_complexes} - fortress weight 2, bastion weight 3 - and
+ * {@code createStructures} tries them in its weighted order, falling back to the other entry when
+ * the first one's biome refuses. The fortress's {@code findGenerationPoint} is (chunk minimum, 64,
+ * chunk minimum) and never refuses; the bastion is a jigsaw at a literal y 33. Both types load the
+ * whole set and evaluate it identically, and each accepts only when the entry vanilla builds is its
+ * own - so a chunk is never both. 1.16.5 has no such set: the shared grid is split by the two
+ * {@code isFeatureChunk} overrides on the random {@code getPotentialFeatureChunk} has just used, the
+ * fortress keeping {@code nextInt(5) < 2}, with no fallback, reproduced by
+ * {@code featureChunkRefusal}.
+ *
+ * <p><strong>The nether fossil.</strong> Its {@code findGenerationPoint} draws a column inside the
+ * chunk and a height, and walks the terrain column down to the first air above soul sand or a
+ * sturdy top face, refusing at sea level: vanilla's own, through the loaded data pack, like the
+ * mineshaft. Because the nether's biome does not depend on height, a chunk none of whose sixteen
+ * quart columns carries an accepted biome is refused before that walk; see
+ * {@link BiomeWorldgenSession#isBiomeColumnConstant()}.
+ *
+ * <p><strong>The ruined portal</strong> needs nothing of its own: the nether entry is the seventh of
+ * the same set. An entry none of whose biomes the dimension's source can return is skipped, so the
+ * nether evaluates one generation point per candidate, not seven, and the overworld evaluates none
+ * for the nether entry.
  *
  * <h2>Placement comes first</h2>
  *
@@ -279,9 +310,23 @@ public final class StructureBiomeValidator {
         /** The area every biome of which the entry requires first, or {@code null}. */
         private final Surrounding surrounding;
 
+        /**
+         * Whether a start of this entry is the structure type the set was loaded for. False only in
+         * a set two types share - the fortress entry of {@code nether_complexes}, seen from the
+         * bastion - where the entry still takes part in vanilla's draw but is not this type.
+         */
+        private final boolean owned;
+
+        /**
+         * Whether vanilla's stub for this entry always lies inside the candidate chunk's own
+         * columns - the nether fossil's - so a biome no quart column of the chunk carries can
+         * refuse it without computing the stub, where the biome does not depend on height.
+         */
+        private final boolean stubInsideChunk;
+
         Entry(String name, String structureId, String biomeTag, int weight, Set<String> biomeIds,
               Position position, String undecidable, int[] footprint, boolean oceanFloor,
-              Surrounding surrounding) {
+              Surrounding surrounding, boolean owned, boolean stubInsideChunk) {
             this.name = name;
             this.structureId = structureId;
             this.biomeTag = biomeTag;
@@ -292,7 +337,18 @@ public final class StructureBiomeValidator {
             this.footprint = footprint;
             this.oceanFloor = oceanFloor;
             this.surrounding = surrounding;
+            this.owned = owned;
+            this.stubInsideChunk = stubInsideChunk;
         }
+    }
+
+    /**
+     * Whether a start of that entry is this type. False only for the other type's entry of a
+     * shared set - the fortress in the bastion's {@code nether_complexes}, and the reverse.
+     */
+    public static boolean ownsVariant(StructureType type, String variantName) {
+        Entry entry = entryOf(type, variantName);
+        return entry != null && entry.owned;
     }
 
     /** A biome test over a whole box of quarts around the candidate, before its own position. */
@@ -442,7 +498,15 @@ public final class StructureBiomeValidator {
      */
     private static final Set<String> VANILLA_GENERATION_POINT = new HashSet<String>(
             java.util.Arrays.asList("minecraft:mineshaft", "minecraft:woodland_mansion",
-                    "minecraft:ruined_portal"));
+                    "minecraft:ruined_portal", "minecraft:fortress", "minecraft:nether_fossil"));
+
+    /**
+     * {@code NetherFossilStructure}: x and z are the chunk minimum plus {@code nextInt(16)}, so the
+     * stub column is always one of the chunk's own. Its height and terrain walk are vanilla's.
+     */
+    private static final String NETHER_FOSSIL = "minecraft:nether_fossil";
+
+    private static final String NOT_IN_DIMENSION = "none of its biomes exist in this dimension";
 
     /**
      * {@code OceanMonumentStructure}: reproduced here, see the class comment. Radius and tag are
@@ -509,6 +573,27 @@ public final class StructureBiomeValidator {
                 return "woodland_mansions";
             case RUINED_PORTAL:
                 return "ruined_portals";
+            case NETHER_FORTRESS:
+            case BASTION_REMNANT:
+                return "nether_complexes";
+            case NETHER_FOSSIL:
+                return "nether_fossils";
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * For a type that shares its structure set with another, the one entry that is this type;
+     * {@code null} where every entry of the set is. {@code NetherStructureTest} holds the shared set
+     * to exactly these two entries.
+     */
+    private static String ownedStructureId(StructureType type) {
+        switch (type) {
+            case NETHER_FORTRESS:
+                return "minecraft:fortress";
+            case BASTION_REMNANT:
+                return "minecraft:bastion_remnant";
             default:
                 return null;
         }
@@ -582,11 +667,24 @@ public final class StructureBiomeValidator {
         }
 
         Set<String> possibleBiomes = session.possibleBiomeIds();
+        boolean attempted = false;
         String firstBiome = null;
         for (int i = 0; i < order.length; i++) {
             Entry entry = entries.get(order[i]);
             if (Collections.disjoint(entry.biomeIds, possibleBiomes)) {
                 continue;
+            }
+            attempted = true;
+            if (entry.stubInsideChunk && session.isBiomeColumnConstant()) {
+                String refusedBiome = biomeNoChunkColumnAccepts(session, entry, chunkX, chunkZ);
+                if (refusedBiome != null) {
+                    // Wherever in the chunk the stub lands, its biome is one of these and refused:
+                    // vanilla's attempt fails, exactly as if the stub had been computed.
+                    if (firstBiome == null) {
+                        firstBiome = refusedBiome;
+                    }
+                    continue;
+                }
             }
             GenerationPoint point = session.jigsawGenerationPoint(entry.structureId, chunkX, chunkZ);
             if (point == null) {
@@ -598,12 +696,45 @@ public final class StructureBiomeValidator {
                 firstBiome = biomeId;
             }
             if (entry.biomeIds.contains(biomeId)) {
+                if (!entry.owned) {
+                    // Vanilla stops here and builds the other type of the shared set.
+                    return StructureValidation.incompatible(biomeId,
+                            "vanilla builds " + entry.name + " here");
+                }
                 return StructureValidation.exactlyCompatible(entry.name, biomeId, point);
             }
+        }
+        if (!attempted) {
+            return StructureValidation.incompatible(null, NOT_IN_DIMENSION);
         }
         return firstBiome == null
                 ? StructureValidation.incompatible(null, NO_START_PIECE)
                 : StructureValidation.incompatible(firstBiome);
+    }
+
+    /**
+     * For an entry whose stub stays inside the chunk's columns, on a biome source that ignores
+     * height: every quart column the chunk's blocks fall in, from {@code chunkX * 4} to
+     * {@code chunkX * 4 + 3} on each axis.
+     *
+     * @return a refused biome of the chunk when none of the sixteen is accepted, or {@code null}
+     *         when some column accepts and the stub has to be computed
+     */
+    private static String biomeNoChunkColumnAccepts(BiomeWorldgenSession session, Entry entry,
+                                                    int chunkX, int chunkZ) {
+        int quartY = session.seaLevel() >> 2;
+        String seen = null;
+        for (int dz = 0; dz < 4; dz++) {
+            for (int dx = 0; dx < 4; dx++) {
+                String biomeId = session.sampleBiomeIdAtQuart((chunkX << 2) + dx, quartY,
+                        (chunkZ << 2) + dz);
+                if (entry.biomeIds.contains(biomeId)) {
+                    return null;
+                }
+                seen = biomeId;
+            }
+        }
+        return seen;
     }
 
     /**
@@ -861,6 +992,7 @@ public final class StructureBiomeValidator {
             }
 
             List<Entry> entries = new ArrayList<Entry>();
+            String owner = ownedStructureId(type);
             JsonArray structures = set.getAsJsonArray("structures");
             for (int i = 0; i < structures.size(); i++) {
                 JsonObject selection = structures.get(i).getAsJsonObject();
@@ -891,7 +1023,9 @@ public final class StructureBiomeValidator {
                             OCEAN_MONUMENT.equals(structureTypeId)
                                     ? new Surrounding(MONUMENT_SURROUNDING_RADIUS, resolveTag(
                                             MONUMENT_SURROUNDING_TAG, tagCache, new HashSet<String>()))
-                                    : null));
+                                    : null,
+                            owner == null || owner.equals(structureId),
+                            NETHER_FOSSIL.equals(structureTypeId)));
                 }
             }
             if (!entries.isEmpty()) {
@@ -1040,6 +1174,12 @@ public final class StructureBiomeValidator {
                 return StructureFeature.WOODLAND_MANSION;
             case RUINED_PORTAL:
                 return StructureFeature.RUINED_PORTAL;
+            case NETHER_FORTRESS:
+                return StructureFeature.NETHER_BRIDGE;
+            case BASTION_REMNANT:
+                return StructureFeature.BASTION_REMNANT;
+            case NETHER_FOSSIL:
+                return StructureFeature.NETHER_FOSSIL;
             default:
                 return null;
         }
@@ -1108,7 +1248,41 @@ public final class StructureBiomeValidator {
                     StructureFeature.WOODLAND_MANSION, chunkX, chunkZ);
             return start != null && start.isValid() ? null : MANSION_TERRAIN_REFUSED;
         }
+        if (type == StructureType.NETHER_FORTRESS || type == StructureType.BASTION_REMNANT) {
+            boolean fortress = type == StructureType.NETHER_FORTRESS;
+            return drawsFortress(session.seed(), featureOf(type), chunkX, chunkZ) == fortress
+                    ? null : fortress ? DREW_BASTION : DREW_FORTRESS;
+        }
+        if (type == StructureType.NETHER_FOSSIL) {
+            // NetherFossilFeature.FeatureStart walks the terrain column down from a random height
+            // and adds no piece when it reaches sea level: vanilla's own start decides.
+            StructureStart<?> start = StructureGeometryGenerator.legacyStart(session,
+                    StructureFeature.NETHER_FOSSIL, chunkX, chunkZ);
+            return start != null && start.isValid() ? null : FOSSIL_TERRAIN_REFUSED;
+        }
         return null;
+    }
+
+    private static final String DREW_BASTION = "vanilla drew a bastion remnant for this chunk";
+    private static final String DREW_FORTRESS = "vanilla drew a fortress for this chunk";
+    private static final String FOSSIL_TERRAIN_REFUSED =
+            "vanilla builds no start: no floor above sea level in its column";
+
+    /^*
+     * The draw 1.16.5's NetherFortressFeature and BastionFeature split the shared grid with.
+     * StructureFeature.generate hands isFeatureChunk the random getPotentialFeatureChunk has just
+     * used - seeded with the region and the salt, then its two offset draws - and the fortress keeps
+     * nextInt(5) &lt; 2, the bastion the rest. There is no reseed and no fallback: a bastion drawn
+     * in basalt deltas, which does not list it, is simply nothing. The random is advanced by
+     * vanilla's own getPotentialFeatureChunk rather than the offsets being recounted here. The
+     * nether generator's grids for these two are the defaults, which NetherStructureTest checks.
+     ^/
+    private static boolean drawsFortress(long seed, StructureFeature<?> feature, int chunkX,
+                                         int chunkZ) {
+        WorldgenRandom random = new WorldgenRandom();
+        feature.getPotentialFeatureChunk(StructureSettings.DEFAULTS.get(feature), seed, random,
+                chunkX, chunkZ);
+        return random.nextInt(5) < 2;
     }
 
     private static boolean allWithin(BiomeWorldgenSession session, int chunkX, int chunkZ,
@@ -1188,7 +1362,7 @@ public final class StructureBiomeValidator {
             loaded.put(entry.getKey(), Collections.singletonList(
                     new Entry(null, null, null, 1,
                             Collections.unmodifiableSet(entry.getValue()), Position.EXACT, null,
-                            null, false, null)));
+                            null, false, null, true, false)));
         }
         return loaded;
     }

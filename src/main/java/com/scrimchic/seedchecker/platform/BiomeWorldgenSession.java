@@ -30,8 +30,10 @@ import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
+import net.minecraft.world.level.biome.MultiNoiseBiomeSourceParameterList;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSourceParameterLists;
 import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.dimension.BuiltinDimensionTypes;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
@@ -39,7 +41,11 @@ import net.minecraft.world.level.levelgen.RandomState;
 //?} else {
 /*import net.minecraft.core.Registry;
 import net.minecraft.data.BuiltinRegistries;
-import net.minecraft.world.level.biome.OverworldBiomeSource;*/
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.level.biome.BiomeSource;
+import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
+import net.minecraft.world.level.biome.OverworldBiomeSource;
+import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;*/
 //?}
 
 /**
@@ -65,6 +71,8 @@ public final class BiomeWorldgenSession {
 
     public static final String OVERWORLD = "minecraft:overworld";
 
+    public static final String NETHER = "minecraft:the_nether";
+
     /** Vanilla's own bootstrap is idempotent, so calling it defensively costs nothing in game. */
     private static boolean bootstrapped;
 
@@ -78,6 +86,7 @@ public final class BiomeWorldgenSession {
     private final Map<Object, String> biomeIds = new IdentityHashMap<Object, String>();
 
     private final long seed;
+    private final String dimensionId;
 
     /** Built on first use; the session is thread confined, so no lock. */
     private Set<String> possibleBiomeIds;
@@ -109,9 +118,12 @@ public final class BiomeWorldgenSession {
         //?}
     }
 
-    /** @return whether this dimension can be generated at all; only the Overworld for now. */
+    /**
+     * @return whether this dimension can be generated at all: the Overworld and, since Phase 3H-2,
+     *         the Nether - each from its own vanilla noise settings, biome source and level height
+     */
     public static boolean supportsDimension(String dimensionId) {
-        return OVERWORLD.equals(dimensionId);
+        return OVERWORLD.equals(dimensionId) || NETHER.equals(dimensionId);
     }
 
     /**
@@ -126,7 +138,7 @@ public final class BiomeWorldgenSession {
             return null;
         }
         ensureBootstrapped();
-        return new BiomeWorldgenSession(seed);
+        return new BiomeWorldgenSession(seed, dimensionId);
     }
 
     private static synchronized void ensureBootstrapped() {
@@ -142,6 +154,25 @@ public final class BiomeWorldgenSession {
 
     public long seed() {
         return seed;
+    }
+
+    /** The dimension this session generates, e.g. {@code minecraft:the_nether}. */
+    public String dimensionId() {
+        return dimensionId;
+    }
+
+    /**
+     * Whether this dimension's biome at a block column is the same at every height.
+     *
+     * <p>True for the nether on every target, from vanilla's own definitions rather than from
+     * sampling: 1.16.5's {@code MultiNoiseBiomeSource} is constructed with {@code useY} false, and
+     * the modern nether noise router gives the climate sampler temperature and vegetation noises of
+     * {@code y_scale} 0 and constant zero continents, erosion, depth and ridges. False for the
+     * overworld, whose biomes are three dimensional from 1.18. {@code NetherStructureTest} also
+     * checks it sample by sample on each target.
+     */
+    public boolean isBiomeColumnConstant() {
+        return NETHER.equals(dimensionId);
     }
 
     /**
@@ -235,13 +266,14 @@ public final class BiomeWorldgenSession {
     private JigsawGenerator jigsaw;
     private boolean jigsawBroken;
 
-    private BiomeWorldgenSession(long seed) {
+    private BiomeWorldgenSession(long seed, String dimensionId) {
         this.seed = seed;
+        this.dimensionId = dimensionId;
         HolderLookup.Provider registries = registries();
 
         Holder<NoiseGeneratorSettings> settingsHolder =
                 registries.lookupOrThrow(Registries.NOISE_SETTINGS)
-                        .getOrThrow(NoiseGeneratorSettings.OVERWORLD);
+                        .getOrThrow(noiseSettingsOf(dimensionId));
         NoiseGeneratorSettings settings = settingsHolder.value();
 
         // The (Provider, ResourceKey, long) overload of RandomState.create only exists on 26.x,
@@ -253,10 +285,12 @@ public final class BiomeWorldgenSession {
         this.climate = randomState.sampler();
         this.biomeSource = MultiNoiseBiomeSource.createFromPreset(
                 registries.lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST)
-                        .getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD));
+                        .getOrThrow(biomeParametersOf(dimensionId)));
         this.terrain = new NoiseBasedChunkGenerator(biomeSource, settingsHolder);
-        this.heightAccessor = LevelHeightAccessor.create(
-                settings.noiseSettings().minY(), settings.noiseSettings().height());
+        // The level's own height, which is what a chunk hands createStructures: the dimension type,
+        // not the noise settings. The overworld's two agree; the nether's do not - its terrain
+        // noise is 128 blocks tall inside a 256 block level.
+        this.heightAccessor = heightAccessorOf(registries, dimensionId);
         this.seaLevel = terrain.getSeaLevel();
 
         // Every height a terrain-derived structure position can land on, widened by one block at
@@ -270,6 +304,29 @@ public final class BiomeWorldgenSession {
         int height = settings.noiseSettings().height();
         this.lowestQuartY = (minY - 1) >> 2;
         this.highestQuartY = (minY + height) >> 2;
+    }
+
+    /** The noise settings a dimension generates with; the overworld's for anything else. */
+    static ResourceKey<NoiseGeneratorSettings> noiseSettingsOf(String dimensionId) {
+        return NETHER.equals(dimensionId) ? NoiseGeneratorSettings.NETHER
+                : NoiseGeneratorSettings.OVERWORLD;
+    }
+
+    /** The multi-noise preset a dimension's biome source is built from. */
+    static ResourceKey<MultiNoiseBiomeSourceParameterList> biomeParametersOf(String dimensionId) {
+        return NETHER.equals(dimensionId) ? MultiNoiseBiomeSourceParameterLists.NETHER
+                : MultiNoiseBiomeSourceParameterLists.OVERWORLD;
+    }
+
+    /** The build height of a dimension's level, from its vanilla dimension type. */
+    static LevelHeightAccessor heightAccessorOf(HolderLookup.Provider registries,
+                                                String dimensionId) {
+        net.minecraft.world.level.dimension.DimensionType type = registries
+                .lookupOrThrow(Registries.DIMENSION_TYPE)
+                .getOrThrow(NETHER.equals(dimensionId) ? BuiltinDimensionTypes.NETHER
+                        : BuiltinDimensionTypes.OVERWORLD)
+                .value();
+        return LevelHeightAccessor.create(type.minY(), type.height());
     }
 
     /** Lowest quart row a terrain-derived structure position in this dimension can sample. */
@@ -340,7 +397,7 @@ public final class BiomeWorldgenSession {
             return LazyInit.State.FAILED;
         }
         try {
-            jigsaw = new JigsawGenerator(data, seed);
+            jigsaw = new JigsawGenerator(data, seed, dimensionId);
             return LazyInit.State.READY;
         } catch (Exception | LinkageError failure) {
             // Remembered, so a session that cannot build one does not try again per candidate.
@@ -417,15 +474,25 @@ public final class BiomeWorldgenSession {
     }
     //?} else {
     /*private final Registry<Biome> biomeRegistry;
-    private final OverworldBiomeSource biomeSource;
+    private final BiomeSource biomeSource;
 
-    private BiomeWorldgenSession(long seed) {
+    private BiomeWorldgenSession(long seed, String dimensionId) {
         this.seed = seed;
+        this.dimensionId = dimensionId;
         // 1.16.5 keeps all worldgen content in code, so the registry is simply a static; the
         // legacy layer stack takes the seed directly and owns mutable caches, which is exactly why
-        // each thread gets its own source.
+        // each thread gets its own source. The nether's is the one
+        // DimensionType.defaultNetherGenerator builds.
         this.biomeRegistry = BuiltinRegistries.BIOME;
-        this.biomeSource = new OverworldBiomeSource(seed, false, false, biomeRegistry);
+        this.biomeSource = NETHER.equals(dimensionId)
+                ? MultiNoiseBiomeSource.Preset.NETHER.biomeSource(biomeRegistry, seed)
+                : new OverworldBiomeSource(seed, false, false, biomeRegistry);
+    }
+
+    /^* The noise settings this dimension's chunk generator is built with. ^/
+    ResourceKey<NoiseGeneratorSettings> legacyNoiseSettings() {
+        return NETHER.equals(dimensionId) ? NoiseGeneratorSettings.NETHER
+                : NoiseGeneratorSettings.OVERWORLD;
     }
 
     private Object sampleRaw(int quartX, int quartY, int quartZ) {
@@ -437,7 +504,7 @@ public final class BiomeWorldgenSession {
     }
 
     /^* This session's biome source, for building a structure start from it on this worker. ^/
-    OverworldBiomeSource legacyBiomeSource() {
+    BiomeSource legacyBiomeSource() {
         return biomeSource;
     }
 

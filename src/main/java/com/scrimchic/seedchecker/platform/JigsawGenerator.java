@@ -22,7 +22,6 @@ import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
-import net.minecraft.world.level.biome.MultiNoiseBiomeSourceParameterLists;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.levelgen.LegacyRandomSource;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
@@ -67,7 +66,8 @@ final class JigsawGenerator {
     private final ChunkGenerator chunkGenerator;
     private final LevelHeightAccessor heightAccessor;
 
-    JigsawGenerator(VanillaStructureData data, long seed) throws IOException {
+    /** @param dimensionId the session's dimension; its noise, biomes and level height are used */
+    JigsawGenerator(VanillaStructureData data, long seed, String dimensionId) throws IOException {
         this.data = data;
         this.registries = data.registries();
         this.generationRegistries = data.generationRegistries();
@@ -76,15 +76,14 @@ final class JigsawGenerator {
 
         Holder<NoiseGeneratorSettings> settings = registries
                 .lookupOrThrow(Registries.NOISE_SETTINGS)
-                .getOrThrow(NoiseGeneratorSettings.OVERWORLD);
+                .getOrThrow(BiomeWorldgenSession.noiseSettingsOf(dimensionId));
         this.randomState = RandomState.create(settings.value(),
                 registries.lookupOrThrow(Registries.NOISE), seed);
         this.biomeSource = MultiNoiseBiomeSource.createFromPreset(
                 registries.lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST)
-                        .getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD));
+                        .getOrThrow(BiomeWorldgenSession.biomeParametersOf(dimensionId)));
         this.chunkGenerator = new NoiseBasedChunkGenerator(biomeSource, settings);
-        this.heightAccessor = LevelHeightAccessor.create(
-                settings.value().noiseSettings().minY(), settings.value().noiseSettings().height());
+        this.heightAccessor = BiomeWorldgenSession.heightAccessorOf(registries, dimensionId);
     }
 
     /**

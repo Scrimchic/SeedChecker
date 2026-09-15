@@ -6,7 +6,6 @@ import com.scrimchic.seedchecker.client.structure.StrongholdManager;
 import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.gui.map.MapCanvas;
-import com.scrimchic.seedchecker.platform.BiomeWorldgenSession;
 import com.scrimchic.seedchecker.platform.StrongholdLocator;
 import com.scrimchic.seedchecker.world.ActiveWorld;
 import com.scrimchic.seedchecker.worldgen.GenerationPoint;
@@ -52,11 +51,18 @@ public final class StrongholdLayer implements StructureMarkerLayer {
     }
 
     @Override
+    public boolean appliesTo(String dimensionId) {
+        return StructureType.STRONGHOLD.generatesIn(dimensionId);
+    }
+
+    @Override
     public String unavailableReason(ActiveWorld world, MapViewport viewport, ChunkRange visible) {
         if (!world.hasSeed()) {
             return "needs a known seed";
         }
-        if (!BiomeWorldgenSession.supportsDimension(world.context().dimensionId())) {
+        // Not the session's support: a nether session exists, and locating strongholds on it
+        // would run the overworld's rings over nether biomes.
+        if (!appliesTo(world.context().dimensionId())) {
             return "overworld only";
         }
         String failure = StrongholdManager.get().failure();
@@ -96,7 +102,8 @@ public final class StrongholdLayer implements StructureMarkerLayer {
 
     @Override
     public boolean isMarkerAt(ActiveWorld world, int chunkX, int chunkZ) {
-        return enabled && positionAt(world, chunkX, chunkZ) != null;
+        return enabled && appliesTo(world.context().dimensionId())
+                && positionAt(world, chunkX, chunkZ) != null;
     }
 
     @Override

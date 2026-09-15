@@ -38,7 +38,6 @@ import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
-import net.minecraft.world.level.levelgen.StructureSettings;
 import net.minecraft.world.level.levelgen.feature.ConfiguredStructureFeature;
 import net.minecraft.world.level.levelgen.feature.StructureFeature;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
@@ -78,6 +77,15 @@ import net.minecraft.world.level.storage.LevelStorageSource;*/
  * {@code MonumentBuilding} is built directly. Neither the portal's nor the mansion's placement
  * moves a piece afterwards: the portal only widens the chunk box it writes into, the mansion only
  * fills cobblestone under itself.
+ *
+ * <h2>The nether</h2>
+ *
+ * <p>Built against the session's own dimension on every version. The fortress's pieces are moved
+ * inside y 48 to 70 by its own piece assembly, the bastion remnant is a jigsaw started at y 33, and
+ * the fossil and the nether ruined portal take their heights from the nether generator's columns -
+ * all fixed before the start exists. None of their {@code postProcess} moves a piece: the fossil's
+ * and the portal's only widen the chunk box they write into (26.2's fossil also places a dried
+ * ghast, and the portal spreads netherrack), which adds blocks, not pieces.
  *
  * <h2>Where there is no exact geometry</h2>
  *
@@ -201,8 +209,9 @@ public final class StructureGeometryGenerator {
 
     /^*
      * Vanilla's own start at that chunk, built exactly as ChunkGenerator.createStructures builds
-     * it: the biome at the chunk's fixed quart, that biome's configured feature, the default grid
-     * settings, and ConfiguredStructureFeature.generate - placement, isFeatureChunk, generatePieces.
+     * it: the biome at the chunk's fixed quart, that biome's configured feature, the generator's own
+     * grid settings for it - the dimension's, which for the nether's ruined portal are not the
+     * defaults - and ConfiguredStructureFeature.generate: placement, isFeatureChunk, generatePieces.
      * Worker threads only; the template manager and chunk generator are this worker's.
      *
      * @return the start, or null when the chunk's biome does not list the feature at all
@@ -221,7 +230,7 @@ public final class StructureGeometryGenerator {
             }
             return configured.generate(world.registries, world.chunkGenerator, biomeSource,
                     world.templates, session.seed(), new ChunkPos(chunkX, chunkZ), biome, 0,
-                    StructureSettings.DEFAULTS.get(feature));
+                    world.chunkGenerator.getSettings().getConfig(feature));
         }
         return null;
     }
@@ -247,6 +256,15 @@ public final class StructureGeometryGenerator {
                 return StructureFeature.RUINED_PORTAL;
             case OCEAN_MONUMENT:
                 return StructureFeature.OCEAN_MONUMENT;
+            // NetherBridgeStart moves its pieces inside y 48 to 70 before returning, the bastion is
+            // a jigsaw at a literal y 33, and the fossil's start finds its height in the terrain
+            // column; none of their pieces is moved again while it is placed.
+            case NETHER_FORTRESS:
+                return StructureFeature.NETHER_BRIDGE;
+            case BASTION_REMNANT:
+                return StructureFeature.BASTION_REMNANT;
+            case NETHER_FOSSIL:
+                return StructureFeature.NETHER_FOSSIL;
             default:
                 return null;
         }
@@ -314,9 +332,11 @@ public final class StructureGeometryGenerator {
             return held;
         }
         ensureStructuresBootstrapped();
-        // Terrain-placed pieces - the mansion's corners, the ruined portal's column - read it.
+        // The dimension's own generator, as DimensionType.defaultNetherGenerator builds it for the
+        // nether. Terrain-placed pieces - the mansion's corners, a ruined portal's or a fossil's
+        // column - read it.
         final NoiseGeneratorSettings settings = BuiltinRegistries.NOISE_GENERATOR_SETTINGS
-                .getOrThrow(NoiseGeneratorSettings.OVERWORLD);
+                .getOrThrow(session.legacyNoiseSettings());
         ChunkGenerator chunkGenerator = new NoiseBasedChunkGenerator(session.legacyBiomeSource(),
                 session.seed(), () -> settings);
         LegacyStructureWorld created = new LegacyStructureWorld(session, RegistryAccess.builtin(),

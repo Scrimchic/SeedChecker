@@ -31,12 +31,16 @@ class MarkerDensityTest {
 
     private static final double[] SCALES = {1.0 / 64, 1.0 / 16, 1.0 / 4, 0.5, 1.0, 4.0};
 
+    private static final String[] DIMENSIONS = {"minecraft:overworld", "minecraft:the_nether"};
+
     @Test
     void markerCountsOverlapAndScanCostAreReported() {
         StructurePlacements placements = StructurePlacements.forThisVersion();
         StructurePlacementEngine engine = new StructurePlacementEngine();
         int worstMarkers = 0;
 
+        // Each dimension on its own: only its layers are drawn there, each on its own grid.
+        for (String dimension : DIMENSIONS) {
         for (int[] screen : SCREENS) {
             for (double scale : SCALES) {
                 final MapViewport viewport = new MapViewport();
@@ -53,11 +57,11 @@ class MarkerDensityTest {
                 long nanos = 0L;
                 StringBuilder perType = new StringBuilder();
                 for (StructureType type : placements.types()) {
-                    StructurePlacementConfig config = placements.get(type);
-                    long budget = config.spacing() == 1
-                            ? StructureLayer.MAX_CHUNK_REGIONS : StructureLayer.MAX_REGIONS;
-                    if (StructurePlacementEngine.regionCount(config, visible) > budget
-                            || StructureLayer.isTooDenseToDraw(config, scale)) {
+                    if (!type.generatesIn(dimension)) {
+                        continue;
+                    }
+                    StructurePlacementConfig config = placements.get(type, dimension);
+                    if (!StructureLayer.isDrawableAt(config, visible, scale)) {
                         zoomIn++;
                         continue;
                     }
@@ -79,14 +83,15 @@ class MarkerDensityTest {
                 }
                 int ambiguous = countOverlapping(all, markerPixels);
                 worstMarkers = Math.max(worstMarkers, all.size());
-                System.out.printf("markers %dx%d at %.4f px/block: %2d px, %2d layers drawn, %2d say "
+                System.out.printf("markers %s %dx%d at %.4f px/block: %2d px, %2d layers drawn, %2d say "
                                 + "zoom in, %4d markers (%5d fills), %4d overlap within a layer, %4d "
                                 + "within %d px of another layer's, walk %.2f ms%s%n",
-                        screen[0], screen[1], scale, markerPixels, shown, zoomIn, all.size(),
+                        dimension, screen[0], screen[1], scale, markerPixels, shown, zoomIn, all.size(),
                         all.size() * 5, overlapping, ambiguous, markerPixels, nanos / 1e6,
                         perType.length() == 0 ? "" : ";" + perType);
                 assertTrue(overlapping == 0, "a drawn layer's own markers overlap at scale " + scale);
             }
+        }
         }
         assertTrue(worstMarkers > 0, "no marker at any zoom");
     }

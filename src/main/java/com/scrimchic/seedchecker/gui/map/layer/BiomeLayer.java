@@ -36,6 +36,16 @@ public final class BiomeLayer implements MapLayer {
      */
     public static final int DEFAULT_SAMPLE_Y = 64;
 
+    /**
+     * The nether's slice height. Every version's nether biome source ignores height - 1.16.5's
+     * multi-noise source is built with {@code useY} false, and the modern nether noise router feeds
+     * the climate a temperature and vegetation noise with a {@code y_scale} of 0 and constant zero
+     * continents, erosion, depth and ridges - so any height draws the same map, which
+     * {@code NetherStructureTest} checks sample by sample. 32 is the nether's sea level, the lava
+     * ocean, named rather than borrowing the overworld's 64.
+     */
+    public static final int NETHER_SAMPLE_Y = 32;
+
     /** Per-frame submission budget, so a large jump in zoom does not enqueue the whole screen. */
     private static final int MAX_REQUESTS_PER_FRAME = 32;
 
@@ -73,6 +83,11 @@ public final class BiomeLayer implements MapLayer {
         this.sampleY = sampleY;
     }
 
+    /** The height the slice is taken at in that dimension. */
+    public int sampleYFor(String dimensionId) {
+        return BiomeWorldgenSession.NETHER.equals(dimensionId) ? NETHER_SAMPLE_Y : sampleY;
+    }
+
     @Override
     public String unavailableReason(ActiveWorld world, MapViewport viewport, ChunkRange visible) {
         if (!world.hasSeed()) {
@@ -83,7 +98,7 @@ public final class BiomeLayer implements MapLayer {
             return "not in a world";
         }
         if (!BiomeWorldgenSession.supportsDimension(dimensionId)) {
-            return "overworld only for now";
+            return "overworld and nether only";
         }
         if (stepFor(viewport) > BiomeWorldgenSession.coarsestBlockStep()) {
             // Measured per version: how coarsely it can sample, and how many rectangles the map
@@ -97,7 +112,7 @@ public final class BiomeLayer implements MapLayer {
     public void render(MapCanvas canvas, MapViewport viewport, ChunkRange visible,
                        ActiveWorld world) {
         BiomeTileManager manager = BiomeTileManager.get();
-        BiomeMapKey map = BiomeMapKey.of(world, sampleY);
+        BiomeMapKey map = BiomeMapKey.of(world, sampleYFor(world.context().dimensionId()));
         manager.useMap(map);
 
         int step = stepFor(viewport);

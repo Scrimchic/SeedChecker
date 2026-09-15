@@ -61,6 +61,34 @@ class StructureValidationStoreTest {
     }
 
     @Test
+    void theSameCandidateInAnotherDimensionIsAnotherDecision() {
+        // Same world, same seed, same chunk, and the one structure type that starts in both
+        // dimensions: the dimension is part of the map key, so an overworld answer is never found
+        // under the nether's key, and switching dimension drops what the other one had decided.
+        StructureValidationStore store = new StructureValidationStore(16, 8);
+        BiomeMapKey overworld = new BiomeMapKey("world-a", SEED, "minecraft:overworld", "1.20.1", 0);
+        BiomeMapKey nether = new BiomeMapKey("world-a", SEED, "minecraft:the_nether", "1.20.1", 0);
+        StructureValidationKey overworldPortal =
+                new StructureValidationKey(overworld, StructureType.RUINED_PORTAL, 5, -9);
+        StructureValidationKey netherPortal =
+                new StructureValidationKey(nether, StructureType.RUINED_PORTAL, 5, -9);
+        assertNotEquals(overworldPortal, netherPortal);
+
+        store.useMap(overworld);
+        store.store(overworldPortal, StructureValidation.incompatible("minecraft:ocean"),
+                store.claim(overworldPortal), 1L);
+        store.release(overworldPortal);
+        assertNotNull(store.resultIfReady(overworldPortal));
+        assertNull(store.resultIfReady(netherPortal), "an overworld answer leaked into the nether");
+
+        assertTrue(store.useMap(nether));
+        assertNull(store.resultIfReady(overworldPortal));
+        assertNull(store.resultIfReady(netherPortal));
+        assertNotEquals(StructureValidationStore.NO_JOB, store.claim(netherPortal),
+                "the nether candidate must be checked on its own");
+    }
+
+    @Test
     void aDecisionThatArrivesAfterTheWorldChangedIsDropped() {
         StructureValidationStore store = new StructureValidationStore(16, 8);
         BiomeMapKey before = mapWithSeed(SEED);
