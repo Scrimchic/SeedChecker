@@ -2,7 +2,10 @@ package com.scrimchic.seedchecker.gui.map.layer;
 
 import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
+import com.scrimchic.seedchecker.client.exploration.ExplorationManager;
 import com.scrimchic.seedchecker.client.structure.StructureValidationManager;
+import com.scrimchic.seedchecker.exploration.StructureKey;
+import com.scrimchic.seedchecker.exploration.StructureStatus;
 import com.scrimchic.seedchecker.gui.map.MapCanvas;
 import com.scrimchic.seedchecker.world.ActiveWorld;
 import com.scrimchic.seedchecker.worldgen.GenerationPoint;
@@ -230,6 +233,9 @@ public final class StructureLayer implements StructureMarkerLayer {
         validation.useMap(map);
 
         final int[] requests = {0};
+        // No lookups at all in a world where nothing has been recorded.
+        final boolean annotated = hasExplorationAnnotations();
+        final ActiveWorld drawnWorld = world;
         engine.forEachCandidate(world.seed(), configIn(world), visible, MAX_MARKERS,
                 new StructureCandidateVisitor() {
                     @Override
@@ -252,6 +258,10 @@ public final class StructureLayer implements StructureMarkerLayer {
                         }
                         if (!result.isRejected()) {
                             draw(target, view, result, chunkX, chunkZ, half, color);
+                            if (annotated) {
+                                drawExplorationDot(target, view, result, chunkX, chunkZ,
+                                        explorationStatusAt(drawnWorld, type, chunkX, chunkZ));
+                            }
                         } else if (showRawCandidates) {
                             draw(target, view, result, chunkX, chunkZ, half, REJECTED_COLOR);
                         }
@@ -353,6 +363,34 @@ public final class StructureLayer implements StructureMarkerLayer {
     /** Whether vanilla lets this set try exactly this chunk: grid placement and restrictions. */
     private boolean isCandidate(ActiveWorld world, int chunkX, int chunkZ) {
         return engine.isStructureChunk(world.seed(), configIn(world), chunkX, chunkZ);
+    }
+
+    /** Whether the active world has any structure annotation to look up while drawing. */
+    static boolean hasExplorationAnnotations() {
+        ExplorationManager exploration = ExplorationManager.getIfInitialized();
+        return exploration != null && exploration.hasStructureAnnotations();
+    }
+
+    /** What the player recorded for the structure of that type starting in that chunk. */
+    static StructureStatus explorationStatusAt(ActiveWorld world, StructureType type, int chunkX,
+                                               int chunkZ) {
+        ExplorationManager exploration = ExplorationManager.getIfInitialized();
+        StructureKey key = StructureKey.predictedIn(world, type, chunkX, chunkZ);
+        return exploration == null || key == null ? StructureStatus.UNVISITED : exploration.statusOf(key);
+    }
+
+    /**
+     * Phase 4A's one visual hint: a dark dot in the middle of the marker of a structure the player
+     * recorded anything about. Which status it is, the selection panel says.
+     */
+    static void drawExplorationDot(MapCanvas canvas, MapViewport viewport, StructureValidation result,
+                                   int chunkX, int chunkZ, StructureStatus status) {
+        if (status == StructureStatus.UNVISITED) {
+            return;
+        }
+        int centerX = (int) Math.round(viewport.blockToScreenX(markerBlockX(result, chunkX) + 0.5));
+        int centerY = (int) Math.round(viewport.blockToScreenY(markerBlockZ(result, chunkZ) + 0.5));
+        canvas.fill(centerX - 1, centerY - 1, centerX + 1, centerY + 1, BORDER_COLOR);
     }
 
     private void draw(MapCanvas canvas, MapViewport viewport, StructureValidation result,

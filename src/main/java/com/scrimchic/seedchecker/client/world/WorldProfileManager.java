@@ -3,6 +3,7 @@ package com.scrimchic.seedchecker.client.world;
 import java.nio.file.Path;
 
 import com.scrimchic.seedchecker.SeedChecker;
+import com.scrimchic.seedchecker.client.exploration.ExplorationManager;
 import com.scrimchic.seedchecker.platform.MinecraftBridge;
 import com.scrimchic.seedchecker.storage.WorldProfileStorage;
 import com.scrimchic.seedchecker.world.ActiveWorld;
@@ -10,6 +11,7 @@ import com.scrimchic.seedchecker.world.WorldContext;
 import com.scrimchic.seedchecker.world.WorldIdentity;
 import com.scrimchic.seedchecker.world.WorldProfile;
 
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 
 /**
@@ -36,11 +38,20 @@ public final class WorldProfileManager {
         this.storage = storage;
     }
 
-    /** @param configRoot the Seed Checker config directory that profiles live under */
+    /**
+     * Also sets up the world's exploration data, which lives beside the profile and follows it: the
+     * active profile decides the active exploration, so the two cannot disagree about which world
+     * the player is in.
+     *
+     * @param configRoot the Seed Checker config directory that profiles live under
+     */
     public static void initClient(Path configRoot) {
         final WorldProfileManager manager = new WorldProfileManager(new WorldProfileStorage(configRoot));
         instance = manager;
+        ExplorationManager.initClient(configRoot);
         ClientTickEvents.END_CLIENT_TICK.register(client -> manager.tick());
+        // Unsaved exploration edits are at most a second old; closing the game writes them at once.
+        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> ExplorationManager.get().deactivate());
     }
 
     public static WorldProfileManager get() {
@@ -91,9 +102,12 @@ public final class WorldProfileManager {
 
     private void tick() {
         WorldIdentity identity = MinecraftBridge.currentWorldIdentity();
+        ExplorationManager exploration = ExplorationManager.get();
         if (identity == null) {
             activeIdentity = null;
             activeProfile = null;
+            // Leaving a world writes its exploration and forgets it.
+            exploration.deactivate();
             return;
         }
 
@@ -120,5 +134,10 @@ public final class WorldProfileManager {
         if (dirty) {
             storage.save(activeProfile);
         }
+
+        // Loads on the first tick in a world, writes the previous world's first on a switch, and
+        // otherwise only writes once an edit has settled.
+        exploration.activate(identity);
+        exploration.tick();
     }
 }

@@ -82,6 +82,7 @@ public final class StrongholdLayer implements StructureMarkerLayer {
         }
         int half = Math.max(MIN_MARKER_PIXELS,
                 (int) Math.round(viewport.getScale() * ChunkRange.CHUNK_SIZE)) / 2;
+        boolean annotated = StructureLayer.hasExplorationAnnotations();
         for (int i = 0; i < positions.size(); i++) {
             StrongholdPosition position = positions.get(i);
             if (position.chunkX() < visible.minChunkX() || position.chunkX() > visible.maxChunkX()
@@ -97,6 +98,11 @@ public final class StrongholdLayer implements StructureMarkerLayer {
             canvas.fill(centerX - half - 1, centerY - half - 1, centerX + half + 1,
                     centerY + half + 1, BORDER_COLOR);
             canvas.fill(centerX - half, centerY - half, centerX + half, centerY + half, COLOR);
+            if (annotated) {
+                StructureLayer.drawExplorationDot(canvas, viewport, result, position.chunkX(),
+                        position.chunkZ(), StructureLayer.explorationStatusAt(world,
+                                StructureType.STRONGHOLD, position.chunkX(), position.chunkZ()));
+            }
         }
     }
 

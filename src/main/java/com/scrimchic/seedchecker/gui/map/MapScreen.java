@@ -3,6 +3,9 @@ package com.scrimchic.seedchecker.gui.map;
 import java.util.List;
 
 import com.scrimchic.seedchecker.client.biome.BiomeTileManager;
+import com.scrimchic.seedchecker.client.exploration.ExplorationManager;
+import com.scrimchic.seedchecker.exploration.StructureKey;
+import com.scrimchic.seedchecker.exploration.StructureStatus;
 import com.scrimchic.seedchecker.client.structure.StrongholdManager;
 import com.scrimchic.seedchecker.client.structure.StructureGeometryManager;
 import com.scrimchic.seedchecker.client.structure.StructureValidationManager;
@@ -103,6 +106,9 @@ public final class MapScreen extends Screen {
     private static final int ACTION_SELECTION_COPY_COORDS = 8;
     private static final int ACTION_SELECTION_COPY_COMMAND = 9;
     private static final int ACTION_SELECTION_CLEAR = 10;
+
+    /** One action per exploration status, from here upwards in declaration order. */
+    private static final int ACTION_EXPLORATION_BASE = 20;
 
     /**
      * How far a click may miss a marker and still hit it, in chunks.
@@ -341,6 +347,7 @@ public final class MapScreen extends Screen {
             panel.line("the candidate chunk centre, not a structure position", COLOR_TEXT_DIM);
         }
         appendBoundsRows(panel, result);
+        appendExplorationRows(panel, world, result);
 
         panel.blank();
         panel.action(ACTION_SELECTION_CENTER, "[Center]", COLOR_TEXT);
@@ -355,6 +362,58 @@ public final class MapScreen extends Screen {
             panel.line(selectionNotice, COLOR_TEXT_DIM);
         }
         return panel;
+    }
+
+    /**
+     * Phase 4A's developer proof of exploration data: the selected structure's recorded status, and
+     * one row per status to set it. Not the final UI - notes and markers come with Phase 4B.
+     *
+     * <p>Offered for any structure the map is showing, exact or not - the player may have checked a
+     * non-exact one in person - but not for a rejected candidate, which is not a structure.
+     */
+    private void appendExplorationRows(TextPanel panel, ActiveWorld world, StructureValidation result) {
+        panel.blank();
+        panel.line("EXPLORATION", COLOR_SECTION);
+        ExplorationManager exploration = ExplorationManager.get();
+        StructureKey key = selectedStructureKey(world);
+        if (key == null || !exploration.isActive()) {
+            panel.line("no world profile to record it in", COLOR_TEXT_DIM);
+            return;
+        }
+        if (result == null || result.isRejected()) {
+            panel.line(result == null ? "available once checked" : "not a structure", COLOR_TEXT_DIM);
+            return;
+        }
+        StructureStatus current = exploration.statusOf(key);
+        panel.line("Status    " + current.displayName(), COLOR_TEXT);
+        String note = exploration.noteOf(key);
+        if (note != null) {
+            int lineBreak = note.indexOf('\n');
+            panel.line("Note      " + (lineBreak < 0 ? note : note.substring(0, lineBreak) + " ..."),
+                    COLOR_TEXT_DIM);
+        }
+        if (!exploration.isWritable()) {
+            panel.line("read-only: exploration.json is from a newer Seed Checker", COLOR_TEXT_DIM);
+            return;
+        }
+        StructureStatus[] statuses = StructureStatus.values();
+        for (int i = 0; i < statuses.length; i++) {
+            boolean selected = statuses[i] == current;
+            panel.action(ACTION_EXPLORATION_BASE + i,
+                    (selected ? "  > " : "    ") + statuses[i].displayName(),
+                    selected ? COLOR_TEXT : COLOR_TEXT_DIM);
+        }
+    }
+
+    /**
+     * The exploration key of the selected structure: the seed the map is drawn from, the dimension,
+     * the layer's type and the candidate chunk.
+     *
+     * @return the key, or {@code null} when nothing is selected or no seed is known
+     */
+    private StructureKey selectedStructureKey(ActiveWorld world) {
+        return selectedLayer == null ? null
+                : StructureKey.predictedIn(world, selectedLayer.type(), selectedChunkX, selectedChunkZ);
     }
 
     /** How far the stronghold list has got, and the one nearest the player once it is known. */
@@ -895,6 +954,17 @@ public final class MapScreen extends Screen {
     }
 
     private void runAction(int action) {
+        StructureStatus[] statuses = StructureStatus.values();
+        if (action >= ACTION_EXPLORATION_BASE && action < ACTION_EXPLORATION_BASE + statuses.length) {
+            StructureKey key = selectedStructureKey(WorldProfileManager.get().currentWorld());
+            if (key != null) {
+                StructureStatus status = statuses[action - ACTION_EXPLORATION_BASE];
+                if (ExplorationManager.get().setStatus(key, status)) {
+                    selectionNotice = "marked " + status.displayName().toLowerCase(java.util.Locale.ROOT);
+                }
+            }
+            return;
+        }
         if (action >= ACTION_SELECTION_CENTER && action <= ACTION_SELECTION_CLEAR) {
             if (selectedLayer != null) {
                 runSelectionAction(action);

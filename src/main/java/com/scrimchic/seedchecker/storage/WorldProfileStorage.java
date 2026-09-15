@@ -1,13 +1,10 @@
 package com.scrimchic.seedchecker.storage;
 
 import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.charset.Charset;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -42,7 +39,6 @@ public final class WorldProfileStorage {
 
     private static final String WORLDS_DIRECTORY = "worlds";
     private static final String PROFILE_FILE = "profile.json";
-    private static final String TEMP_SUFFIX = ".tmp";
 
     private static final Charset UTF_8 = Charset.forName("UTF-8");
 
@@ -116,37 +112,13 @@ public final class WorldProfileStorage {
      */
     public boolean save(WorldProfile profile) {
         Path path = profilePath(profile.identity());
-        Path temporary = path.resolveSibling(PROFILE_FILE + TEMP_SUFFIX);
         try {
-            Files.createDirectories(path.getParent());
-
-            BufferedWriter writer = Files.newBufferedWriter(temporary, UTF_8);
-            try {
-                gson.toJson(StoredProfile.of(profile), StoredProfile.class, writer);
-            } finally {
-                writer.close();
-            }
-
             // Swapped into place so an interrupted write cannot leave a half-written profile.
-            try {
-                Files.move(temporary, path,
-                        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
-            }
+            AtomicFiles.write(path, gson.toJson(StoredProfile.of(profile), StoredProfile.class));
             return true;
         } catch (IOException e) {
             LOGGER.log(Level.WARNING, "Could not save profile to " + path, e);
-            deleteQuietly(temporary);
             return false;
-        }
-    }
-
-    private static void deleteQuietly(Path path) {
-        try {
-            Files.deleteIfExists(path);
-        } catch (IOException ignored) {
-            // Nothing useful to do; the next save overwrites it anyway.
         }
     }
 
