@@ -164,6 +164,7 @@ class ExplorationManagerTest {
         manager.activate(WORLD_A);
         assertTrue(manager.isActive());
         assertFalse(manager.isWritable());
+        assertEquals("exploration.json is from a newer Seed Checker", manager.readOnlyReason());
         assertEquals(StructureStatus.LOOTED, manager.statusOf(fortress(3, 3)));
         assertFalse(manager.setStatus(fortress(3, 3), StructureStatus.EMPTY));
         manager.deactivate();

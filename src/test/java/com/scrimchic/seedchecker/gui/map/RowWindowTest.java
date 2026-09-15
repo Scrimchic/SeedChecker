@@ -90,7 +90,7 @@ class RowWindowTest {
     @Test
     void theEndPanelListsOnlyItsOwnLayers() {
         int layers = layerRows("minecraft:the_end");
-        assertEquals(2, layers, "biomes and the end city");
+        assertEquals(3, layers, "biomes, the end city and custom markers");
         assertTrue(layers < layerRows("minecraft:the_nether"));
     }
 

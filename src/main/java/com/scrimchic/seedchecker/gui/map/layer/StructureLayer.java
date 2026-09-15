@@ -259,7 +259,7 @@ public final class StructureLayer implements StructureMarkerLayer {
                         if (!result.isRejected()) {
                             draw(target, view, result, chunkX, chunkZ, half, color);
                             if (annotated) {
-                                drawExplorationDot(target, view, result, chunkX, chunkZ,
+                                drawExplorationBadge(target, view, result, chunkX, chunkZ, half,
                                         explorationStatusAt(drawnWorld, type, chunkX, chunkZ));
                             }
                         } else if (showRawCandidates) {
@@ -380,17 +380,25 @@ public final class StructureLayer implements StructureMarkerLayer {
     }
 
     /**
-     * Phase 4A's one visual hint: a dark dot in the middle of the marker of a structure the player
-     * recorded anything about. Which status it is, the selection panel says.
+     * The exploration status as a secondary mark: a small badge on the marker's top-right corner,
+     * leaving the structure's own marker - its colour - as the main symbol. Nothing for unvisited.
+     * Only where the marker is drawn; it has no part in which structure the marker is.
+     *
+     * @param half the drawn marker's half size in pixels
      */
-    static void drawExplorationDot(MapCanvas canvas, MapViewport viewport, StructureValidation result,
-                                   int chunkX, int chunkZ, StructureStatus status) {
+    static void drawExplorationBadge(MapCanvas canvas, MapViewport viewport, StructureValidation result,
+                                     int chunkX, int chunkZ, int half, StructureStatus status) {
         if (status == StructureStatus.UNVISITED) {
             return;
         }
         int centerX = (int) Math.round(viewport.blockToScreenX(markerBlockX(result, chunkX) + 0.5));
         int centerY = (int) Math.round(viewport.blockToScreenY(markerBlockZ(result, chunkZ) + 0.5));
-        canvas.fill(centerX - 1, centerY - 1, centerX + 1, centerY + 1, BORDER_COLOR);
+        MarkerSymbols.drawBadge(canvas, status, centerX + half, centerY - half);
+    }
+
+    /** The drawn half size of a structure marker at a zoom, as {@link #render} draws it. */
+    public static int markerHalfPixels(double scale) {
+        return Math.max(MIN_MARKER_PIXELS, (int) Math.round(scale * ChunkRange.CHUNK_SIZE)) / 2;
     }
 
     private void draw(MapCanvas canvas, MapViewport viewport, StructureValidation result,

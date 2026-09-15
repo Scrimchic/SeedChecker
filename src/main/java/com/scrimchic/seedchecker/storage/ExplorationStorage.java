@@ -105,13 +105,18 @@ public final class ExplorationStorage {
     public static final class LoadResult {
 
         private final WorldExploration exploration;
-        private final boolean writable;
+        private final String readOnlyReason;
         private final int skippedEntries;
 
-        LoadResult(WorldExploration exploration, boolean writable, int skippedEntries) {
+        LoadResult(WorldExploration exploration, String readOnlyReason, int skippedEntries) {
             this.exploration = exploration;
-            this.writable = writable;
+            this.readOnlyReason = readOnlyReason;
             this.skippedEntries = skippedEntries;
+        }
+
+        /** Why saving is not allowed, in a few words for the map; {@code null} when it is. */
+        public String readOnlyReason() {
+            return readOnlyReason;
         }
 
         /** Never {@code null}. */
@@ -124,7 +129,7 @@ public final class ExplorationStorage {
          * not rewrite in its own.
          */
         public boolean isWritable() {
-            return writable;
+            return readOnlyReason == null;
         }
 
         /** Entries dropped, or kept unread for a newer version, while loading; for diagnostics. */
@@ -137,7 +142,7 @@ public final class ExplorationStorage {
     public LoadResult load(WorldIdentity identity) {
         Path path = explorationPath(identity);
         if (!Files.isRegularFile(path)) {
-            return new LoadResult(new WorldExploration(), true, 0);
+            return new LoadResult(new WorldExploration(), null, 0);
         }
 
         JsonElement parsed;
@@ -152,7 +157,7 @@ public final class ExplorationStorage {
             // Unreadable, not necessarily corrupt: the file is left alone, and so is every later
             // save, since an empty exploration must not replace data that may still be fine.
             LOGGER.log(Level.WARNING, "Could not read " + path + "; exploration is read-only this session", e);
-            return new LoadResult(new WorldExploration(), false, 0);
+            return new LoadResult(new WorldExploration(), "exploration.json could not be read", 0);
         } catch (JsonParseException | IllegalStateException e) {
             return corrupt(path, "malformed JSON", e);
         }
@@ -162,11 +167,11 @@ public final class ExplorationStorage {
 
         JsonObject rootObject = parsed.getAsJsonObject();
         int formatVersion = intOr(rootObject.get("formatVersion"), -1);
-        boolean writable = true;
+        String readOnlyReason = null;
         if (formatVersion > FORMAT_VERSION) {
             LOGGER.warning(path + " has format version " + formatVersion + ", newer than "
                     + FORMAT_VERSION + "; it is read as far as possible and not rewritten");
-            writable = false;
+            readOnlyReason = "exploration.json is from a newer Seed Checker";
         } else if (formatVersion < 1) {
             LOGGER.warning(path + " has no valid format version; reading it as version " + FORMAT_VERSION);
         }
@@ -189,7 +194,7 @@ public final class ExplorationStorage {
                 }
             }
         }
-        return new LoadResult(exploration, writable, skipped);
+        return new LoadResult(exploration, readOnlyReason, skipped);
     }
 
     private LoadResult corrupt(Path path, String what, Exception cause) {
@@ -198,12 +203,12 @@ public final class ExplorationStorage {
             Files.copy(path, aside, StandardCopyOption.REPLACE_EXISTING);
             LOGGER.log(Level.WARNING, path + " is " + what + "; copied it to " + aside.getFileName()
                     + " and starting with empty exploration data", cause);
-            return new LoadResult(new WorldExploration(), true, 0);
+            return new LoadResult(new WorldExploration(), null, 0);
         } catch (IOException e) {
             // Could not keep a copy, so the original must not be overwritten either.
             LOGGER.log(Level.WARNING, path + " is " + what + " and could not be copied aside; "
                     + "exploration is read-only this session", e);
-            return new LoadResult(new WorldExploration(), false, 0);
+            return new LoadResult(new WorldExploration(), "exploration.json is damaged", 0);
         }
     }
 

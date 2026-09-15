@@ -18,6 +18,8 @@ import com.scrimchic.seedchecker.worldgen.StructureType;
  */
 class LayerDimensionTest {
 
+    private static final String CUSTOM_MARKERS = "Custom Markers";
+
     private static List<String> namesIn(MapLayers layers, String dimensionId) {
         List<String> names = new ArrayList<String>();
         for (MapLayer layer : layers.all()) {
@@ -42,6 +44,7 @@ class LayerDimensionTest {
         assertFalse(overworld.contains("Nether Fortress"));
         assertFalse(overworld.contains("Bastion Remnant"));
         assertFalse(overworld.contains("Nether Fossil"));
+        assertEquals(CUSTOM_MARKERS, overworld.get(overworld.size() - 1), "drawn last, over every structure");
 
         List<String> expectedNether = new ArrayList<String>();
         expectedNether.add("Biomes");
@@ -50,25 +53,30 @@ class LayerDimensionTest {
                 expectedNether.add(type.displayName());
             }
         }
+        expectedNether.add(CUSTOM_MARKERS);
         assertEquals(expectedNether, nether);
-        assertEquals(5, nether.size(), "biomes, ruined portal, fortress, bastion and fossil: " + nether);
+        assertEquals(6, nether.size(), "biomes, ruined portal, fortress, bastion, fossil and markers: " + nether);
         assertFalse(nether.contains("Slime Chunks"));
         assertFalse(nether.contains("Stronghold"));
 
-        // The End: biomes and its one structure. No slime chunks, stronghold, overworld or nether
-        // structure, and no ruined portal - no portal entry accepts an End biome.
-        List<String> end = namesIn(layers, "minecraft:the_end");
+        // The End: biomes, its one structure and the player's markers. No slime chunks, stronghold,
+        // overworld or nether structure, and no ruined portal - no portal entry accepts an End biome.
         List<String> expectedEnd = new ArrayList<String>();
         expectedEnd.add("Biomes");
         expectedEnd.add("End City");
-        assertEquals(expectedEnd, end);
+        expectedEnd.add(CUSTOM_MARKERS);
+        assertEquals(expectedEnd, namesIn(layers, "minecraft:the_end"));
         assertFalse(overworld.contains("End City"));
         assertFalse(nether.contains("End City"));
 
-        // Neither a dimension Seed Checker does not know nor no world at all gets a structure layer.
-        List<String> biomesOnly = new ArrayList<String>();
-        biomesOnly.add("Biomes");
-        assertEquals(biomesOnly, namesIn(layers, "seedchecker:custom"));
-        assertEquals(biomesOnly, namesIn(layers, null));
+        // A dimension Seed Checker does not know still takes the player's markers, but no structure;
+        // no world at all takes neither.
+        List<String> custom = new ArrayList<String>();
+        custom.add("Biomes");
+        custom.add(CUSTOM_MARKERS);
+        assertEquals(custom, namesIn(layers, "seedchecker:custom"));
+        List<String> outside = new ArrayList<String>();
+        outside.add("Biomes");
+        assertEquals(outside, namesIn(layers, null));
     }
 }

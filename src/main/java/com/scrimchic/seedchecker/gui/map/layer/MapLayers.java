@@ -38,6 +38,8 @@ public final class MapLayers {
         }
         // Not grid placed, so not in StructurePlacements; every supported version has strongholds.
         created.add(new StrongholdLayer());
+        // Last, so the player's own markers are never drawn under a predicted structure.
+        created.add(new CustomMarkerLayer());
         return created;
     }
 

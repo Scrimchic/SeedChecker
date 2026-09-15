@@ -53,6 +53,7 @@ public final class ExplorationManager {
     private WorldIdentity activeIdentity;
     private WorldExploration active;
     private boolean writable;
+    private String readOnlyReason;
     private int savedRevision;
     private long saveDueAt;
 
@@ -100,6 +101,7 @@ public final class ExplorationManager {
         activeIdentity = identity;
         active = loaded.exploration();
         writable = loaded.isWritable();
+        readOnlyReason = loaded.readOnlyReason();
         savedRevision = active.revision();
         if (loaded.skippedEntries() > 0) {
             LOGGER.warning(loaded.skippedEntries() + " exploration entries of " + identity.displayName()
@@ -113,6 +115,7 @@ public final class ExplorationManager {
         activeIdentity = null;
         active = null;
         writable = false;
+        readOnlyReason = null;
     }
 
     /** Called every client tick: writes once the save delay after the last edit has passed. */
@@ -147,6 +150,15 @@ public final class ExplorationManager {
     /** Whether edits are allowed: a world is active and its file is not from a newer format. */
     public boolean isWritable() {
         return active != null && writable;
+    }
+
+    /**
+     * Why an active world's exploration cannot be edited, in a few words for the map.
+     *
+     * @return the reason, or {@code null} when it can be edited or no world is active
+     */
+    public String readOnlyReason() {
+        return active == null ? null : readOnlyReason;
     }
 
     /** Whether there are edits not yet on disk. */

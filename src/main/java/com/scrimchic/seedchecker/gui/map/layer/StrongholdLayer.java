@@ -99,11 +99,16 @@ public final class StrongholdLayer implements StructureMarkerLayer {
                     centerY + half + 1, BORDER_COLOR);
             canvas.fill(centerX - half, centerY - half, centerX + half, centerY + half, COLOR);
             if (annotated) {
-                StructureLayer.drawExplorationDot(canvas, viewport, result, position.chunkX(),
-                        position.chunkZ(), StructureLayer.explorationStatusAt(world,
+                StructureLayer.drawExplorationBadge(canvas, viewport, result, position.chunkX(),
+                        position.chunkZ(), half, StructureLayer.explorationStatusAt(world,
                                 StructureType.STRONGHOLD, position.chunkX(), position.chunkZ()));
             }
         }
+    }
+
+    /** The drawn half size of a stronghold marker at a zoom, as {@link #render} draws it. */
+    public static int markerHalfPixels(double scale) {
+        return Math.max(MIN_MARKER_PIXELS, (int) Math.round(scale * ChunkRange.CHUNK_SIZE)) / 2;
     }
 
     @Override

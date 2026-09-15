@@ -1,5 +1,7 @@
 package com.scrimchic.seedchecker.platform;
 
+import com.scrimchic.seedchecker.world.TeleportCommand;
+
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 
@@ -75,13 +77,21 @@ public final class PlayerNavigator {
         return TeleportResult.SENT;
     }
 
-    /** The command as the player would type it, for the clipboard. */
+    /** The column command as the player would type it, for the clipboard. */
     public static String teleportCommand(int blockX, int blockZ) {
         return "/" + teleportArguments(blockX, blockZ);
     }
 
+    /**
+     * For the clipboard only: the exact command when the height is known, the column one when it is
+     * not. Never sent - a remembered height is not known to be safe to stand at any more.
+     */
+    public static String teleportCommand(int blockX, Integer blockY, int blockZ) {
+        return "/" + TeleportCommand.forPosition(blockX, blockY, blockZ);
+    }
+
     private static String teleportArguments(int blockX, int blockZ) {
-        return "tp @s " + blockX + " ~ " + blockZ;
+        return TeleportCommand.column(blockX, blockZ);
     }
 
     /** Puts text on the system clipboard. Does nothing if the client is not up yet. */

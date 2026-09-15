@@ -14,13 +14,19 @@ import java.util.List;
  * <p>A panel may be given a maximum height. It then draws the rows that fit from a scroll offset,
  * with a thin bar showing where it is, so a long panel on a small window stays usable instead of
  * running off the screen.
+ *
+ * <p>A row is either one line - clickable as a whole or not at all - or a row of buttons, several
+ * separately clickable labels side by side, so a choice between a few values takes one click.
  */
 public final class TextPanel {
 
     /** Returned by {@link #actionAt} when nothing clickable is under the cursor. */
     public static final int NO_ACTION = -1;
 
-    private static final int PADDING = 4;
+    static final int PADDING = 4;
+
+    /** Pixels between two buttons of one row. */
+    static final int BUTTON_GAP = 8;
 
     private static final int SCROLLBAR_TRACK = 0x40FFFFFF;
     private static final int SCROLLBAR_THUMB = 0xB0FFFFFF;
@@ -31,6 +37,7 @@ public final class TextPanel {
 
     private int maxHeight = Integer.MAX_VALUE;
     private int requestedFirstRow;
+    private int minWidth;
 
     private boolean drawn;
     private int drawnLeft;
@@ -47,7 +54,7 @@ public final class TextPanel {
     }
 
     public TextPanel line(String text, int color) {
-        rows.add(new Row(text, color, NO_ACTION));
+        rows.add(new Row(text, color, NO_ACTION, null, null, null));
         return this;
     }
 
@@ -62,7 +69,31 @@ public final class TextPanel {
      *                 {@link #NO_ACTION}
      */
     public TextPanel action(int actionId, String text, int color) {
-        rows.add(new Row(text, color, actionId));
+        rows.add(new Row(text, color, actionId, null, null, null));
+        return this;
+    }
+
+    /** Adds a row of buttons, each its own action; the arrays are parallel. */
+    public TextPanel buttons(int[] actionIds, String[] labels, int[] colors) {
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < labels.length; i++) {
+            if (i > 0) {
+                text.append("  ");
+            }
+            text.append(labels[i]);
+        }
+        rows.add(new Row(text.toString(), 0, NO_ACTION, actionIds.clone(), labels.clone(), colors.clone()));
+        return this;
+    }
+
+    /** How many rows have been added; the index the next row will get. */
+    public int rowCount() {
+        return rows.size();
+    }
+
+    /** Makes the panel at least this wide, padding included, however short its rows. */
+    public TextPanel minWidth(int pixels) {
+        this.minWidth = pixels;
         return this;
     }
 
@@ -82,18 +113,34 @@ public final class TextPanel {
         return visibleRows(lineHeight(canvas)) * lineHeight(canvas) + PADDING * 2;
     }
 
+    /** How many rows the panel shows at its height limit. */
+    public int visibleRowCount(MapCanvas canvas) {
+        return visibleRows(lineHeight(canvas));
+    }
+
     /** The width the panel will take, so a caller can right-align it before drawing. */
     public int width(MapCanvas canvas) {
         int textWidth = 0;
         for (int i = 0; i < rows.size(); i++) {
-            textWidth = Math.max(textWidth, canvas.textWidth(rows.get(i).text));
+            textWidth = Math.max(textWidth, rowWidth(canvas, rows.get(i)));
         }
-        return textWidth + PADDING * 2;
+        return Math.max(minWidth, textWidth + PADDING * 2);
+    }
+
+    private static int rowWidth(MapCanvas canvas, Row row) {
+        if (row.buttonLabels == null) {
+            return canvas.textWidth(row.text);
+        }
+        int width = 0;
+        for (int i = 0; i < row.buttonLabels.length; i++) {
+            width += canvas.textWidth(row.buttonLabels[i]) + (i > 0 ? BUTTON_GAP : 0);
+        }
+        return width;
     }
 
     /**
      * Draws the panel with its top-left corner at ({@code left}, {@code top}) and highlights
-     * whichever clickable row the cursor is over.
+     * whichever clickable row or button the cursor is over.
      */
     public void draw(MapCanvas canvas, int left, int top, double mouseX, double mouseY) {
         int lineHeight = lineHeight(canvas);
@@ -112,11 +159,26 @@ public final class TextPanel {
 
         canvas.fill(left, top, drawnRight, drawnBottom, backgroundColor);
 
+        // Button spans first, so hover testing below can use them.
+        for (int i = 0; i < visible; i++) {
+            Row row = rows.get(drawnFirstRow + i);
+            if (row.buttonLabels != null) {
+                row.layoutButtons(canvas, left + PADDING);
+            }
+        }
         int hovered = actionAt(mouseX, mouseY);
         for (int i = 0; i < visible; i++) {
             Row row = rows.get(drawnFirstRow + i);
-            int color = row.actionId != NO_ACTION && row.actionId == hovered ? hoverColor : row.color;
-            canvas.text(row.text, left + PADDING, drawnTop + PADDING + i * lineHeight, color);
+            int y = drawnTop + PADDING + i * lineHeight;
+            if (row.buttonLabels == null) {
+                int color = row.actionId != NO_ACTION && row.actionId == hovered ? hoverColor : row.color;
+                canvas.text(row.text, left + PADDING, y, color);
+                continue;
+            }
+            for (int b = 0; b < row.buttonLabels.length; b++) {
+                int color = row.buttonActions[b] == hovered ? hoverColor : row.buttonColors[b];
+                canvas.text(row.buttonLabels[b], row.buttonStarts[b], y, color);
+            }
         }
 
         if (isScrollable()) {
@@ -132,7 +194,7 @@ public final class TextPanel {
         }
     }
 
-    /** @return the action id of the clickable row at that point, or {@link #NO_ACTION}. */
+    /** @return the action id of the clickable row or button at that point, or {@link #NO_ACTION}. */
     public int actionAt(double x, double y) {
         if (!drawn || x < drawnLeft || x >= drawnRight || drawnLineHeight <= 0) {
             return NO_ACTION;
@@ -145,8 +207,24 @@ public final class TextPanel {
         if (index >= drawnVisibleRows) {
             return NO_ACTION;
         }
-        int row = drawnFirstRow + index;
-        return row < rows.size() ? rows.get(row).actionId : NO_ACTION;
+        int rowIndex = drawnFirstRow + index;
+        if (rowIndex >= rows.size()) {
+            return NO_ACTION;
+        }
+        Row row = rows.get(rowIndex);
+        if (row.buttonLabels == null) {
+            return row.actionId;
+        }
+        if (row.buttonStarts == null) {
+            return NO_ACTION;
+        }
+        for (int b = 0; b < row.buttonLabels.length; b++) {
+            // Half the gap on either side belongs to the button, so there is no dead pixel between.
+            if (x >= row.buttonStarts[b] - BUTTON_GAP / 2 && x < row.buttonEnds[b] + BUTTON_GAP / 2) {
+                return row.buttonActions[b];
+            }
+        }
+        return NO_ACTION;
     }
 
     /** Whether the point is over the panel as last drawn. */
@@ -157,6 +235,23 @@ public final class TextPanel {
     /** The first row drawn last frame, clamped, for the caller to remember. */
     public int firstRow() {
         return drawnFirstRow;
+    }
+
+    /**
+     * Where a row's text was drawn from, for drawing over it - a text cursor.
+     *
+     * @return the top pixel of the row, or {@link Integer#MIN_VALUE} when it was scrolled out of view
+     */
+    public int rowTop(int rowIndex) {
+        if (!drawn || rowIndex < drawnFirstRow || rowIndex >= drawnFirstRow + drawnVisibleRows) {
+            return Integer.MIN_VALUE;
+        }
+        return drawnTop + PADDING + (rowIndex - drawnFirstRow) * drawnLineHeight;
+    }
+
+    /** The left pixel every row's text starts at. */
+    public int textLeft() {
+        return drawnLeft + PADDING;
     }
 
     /** Whether the last draw had more rows than it could show. */
@@ -180,10 +275,32 @@ public final class TextPanel {
         final int color;
         final int actionId;
 
-        Row(String text, int color, int actionId) {
+        final int[] buttonActions;
+        final String[] buttonLabels;
+        final int[] buttonColors;
+        int[] buttonStarts;
+        int[] buttonEnds;
+
+        Row(String text, int color, int actionId, int[] buttonActions, String[] buttonLabels,
+            int[] buttonColors) {
             this.text = text;
             this.color = color;
             this.actionId = actionId;
+            this.buttonActions = buttonActions;
+            this.buttonLabels = buttonLabels;
+            this.buttonColors = buttonColors;
+        }
+
+        void layoutButtons(MapCanvas canvas, int left) {
+            buttonStarts = new int[buttonLabels.length];
+            buttonEnds = new int[buttonLabels.length];
+            int x = left;
+            for (int b = 0; b < buttonLabels.length; b++) {
+                buttonStarts[b] = x;
+                x += canvas.textWidth(buttonLabels[b]);
+                buttonEnds[b] = x;
+                x += BUTTON_GAP;
+            }
         }
     }
 }
