@@ -1,26 +1,28 @@
 package com.scrimchic.seedchecker.gui.map.edit;
 
+import com.scrimchic.seedchecker.exploration.ExplorationText;
+
 /**
  * The text of one editable field and where the cursor is in it.
  *
- * <p>Plain text only. The limit is the model's own - {@code ExplorationText}'s, in UTF-16 units - so
- * a buffer never holds more than the model would keep, and input past it is refused rather than
- * cut later. The cursor never stands between the two halves of a surrogate pair, and a code point
- * is inserted or removed whole.
+ * <p>Plain text only. The limit is the model's own, in code points, counted by
+ * {@link ExplorationText#codePointLength} - so a buffer never holds more than the model would keep,
+ * and input past it is refused rather than cut later. The cursor never stands between the two halves
+ * of a surrogate pair, and a code point is inserted or removed whole.
  *
  * <p>Older Minecraft versions deliver a character outside the Basic Multilingual Plane as two
- * separate {@code char} events; a lone high surrogate is accepted only with room for its partner,
- * and a stray one is dropped from {@link #committedText()}.
+ * separate {@code char} events; a high surrogate takes the code point's place, its low surrogate then
+ * joins it without counting again, and a stray half is dropped from {@link #committedText()}.
  */
 public final class TextBuffer {
 
-    private final int maxLength;
+    private final int maxCodePoints;
     private final boolean multiline;
     private final StringBuilder text = new StringBuilder();
     private int cursor;
 
-    public TextBuffer(int maxLength, boolean multiline) {
-        this.maxLength = maxLength;
+    public TextBuffer(int maxCodePoints, boolean multiline) {
+        this.maxCodePoints = maxCodePoints;
         this.multiline = multiline;
     }
 
@@ -32,11 +34,7 @@ public final class TextBuffer {
             if (!multiline) {
                 normalized = normalized.replace('\n', ' ');
             }
-            int end = Math.min(normalized.length(), maxLength);
-            if (end > 0 && end < normalized.length() && Character.isHighSurrogate(normalized.charAt(end - 1))) {
-                end--;
-            }
-            text.append(normalized, 0, end);
+            text.append(ExplorationText.limitCodePoints(normalized, maxCodePoints));
         }
         cursor = text.length();
     }
@@ -65,12 +63,18 @@ public final class TextBuffer {
         return cursor;
     }
 
+    /** The length in UTF-16 units, which is what the cursor is measured in. */
     public int length() {
         return text.length();
     }
 
-    public int maxLength() {
-        return maxLength;
+    /** The length in code points, which is what the limit is measured in. */
+    public int codePointCount() {
+        return ExplorationText.codePointLength(text);
+    }
+
+    public int maxCodePoints() {
+        return maxCodePoints;
     }
 
     public boolean isMultiline() {
@@ -92,21 +96,22 @@ public final class TextBuffer {
         if (codePoint >= Character.MIN_SURROGATE && codePoint <= Character.MAX_SURROGATE) {
             char half = (char) codePoint;
             if (Character.isHighSurrogate(half)) {
-                if (text.length() + 2 > maxLength) {
+                if (codePointCount() + 1 > maxCodePoints) {
                     return false;
                 }
             } else if (cursor == 0 || !Character.isHighSurrogate(text.charAt(cursor - 1))
-                    || text.length() + 1 > maxLength) {
+                    || (cursor < text.length() && Character.isLowSurrogate(text.charAt(cursor)))) {
+                // A low half only completes a high half that is still waiting for one.
                 return false;
             }
             text.insert(cursor, half);
             cursor++;
             return true;
         }
-        char[] chars = Character.toChars(codePoint);
-        if (text.length() + chars.length > maxLength) {
+        if (codePointCount() + 1 > maxCodePoints) {
             return false;
         }
+        char[] chars = Character.toChars(codePoint);
         text.insert(cursor, chars);
         cursor += chars.length;
         return true;
@@ -114,12 +119,50 @@ public final class TextBuffer {
 
     /** @return whether a line break was inserted; never in a single-line field */
     public boolean newline() {
-        if (!multiline || text.length() + 1 > maxLength) {
+        if (!multiline || codePointCount() + 1 > maxCodePoints) {
             return false;
         }
         text.insert(cursor, '\n');
         cursor++;
         return true;
+    }
+
+    /**
+     * Inserts pasted text at the cursor, as much of it as fits.
+     *
+     * <p>Line breaks are kept in a multiline field and become spaces in a single-line one, a tab
+     * becomes a space, other control characters are dropped, and a stray surrogate half in the
+     * clipboard is dropped too. Nothing past the limit is inserted, and a pair is never cut.
+     *
+     * @return how many code points were inserted
+     */
+    public int paste(String pasted) {
+        if (pasted == null || pasted.isEmpty()) {
+            return 0;
+        }
+        String normalized = pasted.replace("\r\n", "\n").replace('\r', '\n');
+        StringBuilder clean = new StringBuilder(normalized.length());
+        for (int i = 0; i < normalized.length(); ) {
+            int codePoint = normalized.codePointAt(i);
+            i += Character.charCount(codePoint);
+            if (codePoint == '\n') {
+                clean.append(multiline ? '\n' : ' ');
+            } else if (codePoint == '\t') {
+                clean.append(' ');
+            } else if (codePoint >= Character.MIN_SURROGATE && codePoint <= Character.MAX_SURROGATE) {
+                continue;
+            } else if (!Character.isISOControl(codePoint)) {
+                clean.appendCodePoint(codePoint);
+            }
+        }
+        int room = maxCodePoints - codePointCount();
+        if (room <= 0 || clean.length() == 0) {
+            return 0;
+        }
+        String fitting = ExplorationText.limitCodePoints(clean.toString(), room);
+        text.insert(cursor, fitting);
+        cursor += fitting.length();
+        return ExplorationText.codePointLength(fitting);
     }
 
     /** Removes the code point before the cursor. */

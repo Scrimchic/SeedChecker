@@ -1,6 +1,10 @@
 package com.scrimchic.seedchecker.gui.map;
 
+import com.scrimchic.seedchecker.client.exploration.ExplorationManager;
+import com.scrimchic.seedchecker.exploration.CustomMarker;
+import com.scrimchic.seedchecker.gui.map.layer.CustomMarkerLayer;
 import com.scrimchic.seedchecker.gui.map.layer.StructureMarkerLayer;
+import com.scrimchic.seedchecker.world.ActiveWorld;
 import com.scrimchic.seedchecker.worldgen.biome.BiomeMapKey;
 
 /**
@@ -77,5 +81,25 @@ public final class MapSelection {
     /** The marker's id; {@code null} for a structure. */
     public String markerId() {
         return markerId;
+    }
+
+    /** A string naming the selected object, equal for the same object selected twice. */
+    public String targetKey() {
+        return isMarker() ? "marker:" + markerId
+                : "structure:" + layer.id() + ":" + chunkX + ":" + chunkZ;
+    }
+
+    /**
+     * Whether the selected object is still on the map, by the same rules that draw it: a structure
+     * through its layer's {@link StructureMarkerLayer#isShown}, a marker through
+     * {@link CustomMarkerLayer#isMarkerShown} on its current data. A selection that is not shown is
+     * dropped.
+     */
+    public boolean isShown(ActiveWorld world, ExplorationManager exploration, CustomMarkerLayer markers) {
+        if (isStructure()) {
+            return layer.isShown(world, chunkX, chunkZ);
+        }
+        CustomMarker marker = exploration == null ? null : exploration.marker(markerId);
+        return marker != null && markers != null && markers.isMarkerShown(world, marker);
     }
 }

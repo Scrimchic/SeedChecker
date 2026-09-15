@@ -4,6 +4,7 @@ import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.client.exploration.ExplorationManager;
 import com.scrimchic.seedchecker.client.structure.StructureValidationManager;
+import com.scrimchic.seedchecker.exploration.ExplorationFilters;
 import com.scrimchic.seedchecker.exploration.StructureKey;
 import com.scrimchic.seedchecker.exploration.StructureStatus;
 import com.scrimchic.seedchecker.gui.map.MapCanvas;
@@ -33,6 +34,9 @@ import com.scrimchic.seedchecker.worldgen.biome.BiomeMapKey;
  * the frame. A candidate still waiting for its answer is invisible unless
  * {@link #setShowRawCandidates} is on, which shows every grid candidate and tints the rejected
  * ones - the developer view of what the filter is doing.
+ *
+ * <p>What the player recorded filters it too: a structure whose exploration status the filters hide
+ * is neither drawn, picked, described nor kept selected, through {@link #isStructureShown}.
  *
  * <p>One instance per structure type; {@link MapLayers#createDefault()} only creates the types the
  * running version actually has, so an unsupported structure never appears in the UI at all.
@@ -81,8 +85,17 @@ public final class StructureLayer implements StructureMarkerLayer {
     private final StructurePlacements placements;
     private final int color;
 
+    /** Shared by every layer of one map; see {@link #isStructureShown}. */
+    private final ExplorationFilters filters;
+
+    /** Fixed in tests; the client's manager when {@code null}. */
+    private final ExplorationManager fixedExploration;
+
     /** Reused across frames; the render thread is the only thread that touches it. */
     private final StructurePlacementEngine engine = new StructurePlacementEngine();
+
+    /** Drawn structures per exploration status, last frame, by ordinal. */
+    private final int[] drawnCounts = new int[StructureStatus.values().length];
 
     private boolean enabled = true;
 
@@ -94,10 +107,22 @@ public final class StructureLayer implements StructureMarkerLayer {
         showRawCandidates = show;
     }
 
-    public StructureLayer(StructureType type, StructurePlacements placements) {
+    public StructureLayer(StructureType type, StructurePlacements placements, ExplorationFilters filters) {
+        this(type, placements, filters, null);
+    }
+
+    /** @param exploration the exploration to filter by, or {@code null} for the client's */
+    public StructureLayer(StructureType type, StructurePlacements placements, ExplorationFilters filters,
+                          ExplorationManager exploration) {
         this.type = type;
         this.placements = placements;
         this.color = colorOf(type);
+        this.filters = filters;
+        this.fixedExploration = exploration;
+    }
+
+    private ExplorationManager exploration() {
+        return fixedExploration != null ? fixedExploration : ExplorationManager.getIfInitialized();
     }
 
     /** The grid this layer's candidates sit on in the world's current dimension. */
@@ -150,6 +175,12 @@ public final class StructureLayer implements StructureMarkerLayer {
             default:
                 return 0xFFCCCCCC;
         }
+    }
+
+    /** The structure type's own stable id. */
+    @Override
+    public String id() {
+        return type.id();
     }
 
     @Override
@@ -233,13 +264,19 @@ public final class StructureLayer implements StructureMarkerLayer {
         validation.useMap(map);
 
         final int[] requests = {0};
-        // No lookups at all in a world where nothing has been recorded.
-        final boolean annotated = hasExplorationAnnotations();
+        final ExplorationManager exploration = exploration();
         final ActiveWorld drawnWorld = world;
+        java.util.Arrays.fill(drawnCounts, 0);
         engine.forEachCandidate(world.seed(), configIn(world), visible, MAX_MARKERS,
                 new StructureCandidateVisitor() {
                     @Override
                     public boolean visit(int chunkX, int chunkZ) {
+                        // The status first: a structure the filters hide is not drawn in any form,
+                        // and is not asked about either. No lookup at all when nothing is recorded.
+                        StructureStatus status = explorationStatus(exploration, drawnWorld, type, chunkX, chunkZ);
+                        if (!filters.isStructureVisible(status)) {
+                            return true;
+                        }
                         StructureValidationKey key =
                                 new StructureValidationKey(map, type, chunkX, chunkZ);
                         StructureValidation result = validation.resultIfReady(key);
@@ -258,10 +295,8 @@ public final class StructureLayer implements StructureMarkerLayer {
                         }
                         if (!result.isRejected()) {
                             draw(target, view, result, chunkX, chunkZ, half, color);
-                            if (annotated) {
-                                drawExplorationBadge(target, view, result, chunkX, chunkZ, half,
-                                        explorationStatusAt(drawnWorld, type, chunkX, chunkZ));
-                            }
+                            drawExplorationBadge(target, view, result, chunkX, chunkZ, half, status);
+                            drawnCounts[status.ordinal()]++;
                         } else if (showRawCandidates) {
                             draw(target, view, result, chunkX, chunkZ, half, REJECTED_COLOR);
                         }
@@ -277,7 +312,7 @@ public final class StructureLayer implements StructureMarkerLayer {
      */
     @Override
     public String describeAt(ActiveWorld world, int chunkX, int chunkZ) {
-        if (!world.hasSeed() || !isCandidate(world, chunkX, chunkZ)) {
+        if (!world.hasSeed() || !isCandidate(world, chunkX, chunkZ) || !isShown(world, chunkX, chunkZ)) {
             return null;
         }
         StructureValidation result = resultAt(world, chunkX, chunkZ);
@@ -342,8 +377,7 @@ public final class StructureLayer implements StructureMarkerLayer {
      */
     @Override
     public boolean isMarkerAt(ActiveWorld world, int chunkX, int chunkZ) {
-        if (!enabled || !world.hasSeed() || !appliesTo(world.context().dimensionId())
-                || !isCandidate(world, chunkX, chunkZ)) {
+        if (!world.hasSeed() || !isShown(world, chunkX, chunkZ) || !isCandidate(world, chunkX, chunkZ)) {
             return false;
         }
         StructureValidation result = resultAt(world, chunkX, chunkZ);
@@ -365,18 +399,42 @@ public final class StructureLayer implements StructureMarkerLayer {
         return engine.isStructureChunk(world.seed(), configIn(world), chunkX, chunkZ);
     }
 
-    /** Whether the active world has any structure annotation to look up while drawing. */
-    static boolean hasExplorationAnnotations() {
-        ExplorationManager exploration = ExplorationManager.getIfInitialized();
-        return exploration != null && exploration.hasStructureAnnotations();
+    @Override
+    public boolean isShown(ActiveWorld world, int chunkX, int chunkZ) {
+        return enabled && appliesTo(world.context().dimensionId())
+                && isStructureShown(filters, exploration(), world, type, chunkX, chunkZ);
     }
 
-    /** What the player recorded for the structure of that type starting in that chunk. */
-    static StructureStatus explorationStatusAt(ActiveWorld world, StructureType type, int chunkX,
-                                               int chunkZ) {
-        ExplorationManager exploration = ExplorationManager.getIfInitialized();
+    @Override
+    public void addDrawnStatusCounts(int[] counts) {
+        for (int i = 0; i < drawnCounts.length; i++) {
+            counts[i] += drawnCounts[i];
+        }
+    }
+
+    /**
+     * What the player recorded for the structure of that type starting in that chunk, as the map
+     * filters it: unvisited when nothing is recorded, when there is no world profile, and when there
+     * is no seed to predict from. Allocates nothing while the world has no structure annotation.
+     */
+    static StructureStatus explorationStatus(ExplorationManager exploration, ActiveWorld world,
+                                             StructureType type, int chunkX, int chunkZ) {
+        if (exploration == null || !exploration.hasStructureAnnotations()) {
+            return StructureStatus.UNVISITED;
+        }
         StructureKey key = StructureKey.predictedIn(world, type, chunkX, chunkZ);
-        return exploration == null || key == null ? StructureStatus.UNVISITED : exploration.statusOf(key);
+        return key == null ? StructureStatus.UNVISITED : exploration.statusOf(key);
+    }
+
+    /**
+     * The exploration filters' decision for one structure: the single rule drawing, picking,
+     * describing and keeping a selection all go through, for grid structures and strongholds alike.
+     * How exactly the structure was predicted is deliberately not an input.
+     */
+    static boolean isStructureShown(ExplorationFilters filters, ExplorationManager exploration,
+                                    ActiveWorld world, StructureType type, int chunkX, int chunkZ) {
+        return filters.showsAllStatuses()
+                || filters.isStructureVisible(explorationStatus(exploration, world, type, chunkX, chunkZ));
     }
 
     /**

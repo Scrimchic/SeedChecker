@@ -8,6 +8,7 @@ import com.scrimchic.seedchecker.client.exploration.ExplorationManager;
 import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.exploration.CustomMarker;
+import com.scrimchic.seedchecker.exploration.ExplorationFilters;
 import com.scrimchic.seedchecker.gui.map.MapCanvas;
 import com.scrimchic.seedchecker.gui.map.MapHitTest;
 import com.scrimchic.seedchecker.world.ActiveWorld;
@@ -20,6 +21,10 @@ import com.scrimchic.seedchecker.world.ActiveWorld;
  * dimensions are never walked - and draws the ones on screen at a fixed pixel size, whatever the
  * zoom. Player markers are never hidden for being far out; with thousands of them, culling to the
  * viewport is all that happens.
+ *
+ * <p>{@link #isMarkerShown} is the one rule for whether a marker is on the map at all - this layer on,
+ * the marker in this dimension, its type let through by the filters - and drawing, picking, the marker
+ * list and the selection all go through it.
  */
 public final class CustomMarkerLayer implements MapLayer {
 
@@ -34,21 +39,30 @@ public final class CustomMarkerLayer implements MapLayer {
 
     private static final int LABEL_COLOR = 0xFFF4F1E8;
 
+    private final ExplorationFilters filters;
+
     /** Fixed in tests; the client's manager otherwise. */
     private final ExplorationManager fixedExploration;
 
     private boolean enabled = true;
 
-    public CustomMarkerLayer() {
-        this(null);
+    public CustomMarkerLayer(ExplorationFilters filters) {
+        this(filters, null);
     }
 
-    CustomMarkerLayer(ExplorationManager exploration) {
+    /** @param exploration the exploration to read, or {@code null} for the client's */
+    public CustomMarkerLayer(ExplorationFilters filters, ExplorationManager exploration) {
+        this.filters = filters;
         this.fixedExploration = exploration;
     }
 
     private ExplorationManager exploration() {
         return fixedExploration != null ? fixedExploration : ExplorationManager.getIfInitialized();
+    }
+
+    @Override
+    public String id() {
+        return "custom_markers";
     }
 
     @Override
@@ -113,14 +127,33 @@ public final class CustomMarkerLayer implements MapLayer {
         }
     }
 
-    /** The markers of the world's current dimension that are on screen, in creation order. */
-    public List<CustomMarker> visibleMarkers(ActiveWorld world, MapViewport viewport) {
+    /** Whether a marker is on the map right now: the one rule every marker path asks. */
+    public boolean isMarkerShown(ActiveWorld world, CustomMarker marker) {
+        String dimensionId = world.context().dimensionId();
+        return enabled && marker != null && dimensionId != null && marker.dimensionId().equals(dimensionId)
+                && filters.isMarkerVisible(marker);
+    }
+
+    /** Every marker of the world's current dimension that is shown, on screen or not, in creation order. */
+    public List<CustomMarker> shownMarkers(ActiveWorld world) {
         ExplorationManager exploration = exploration();
         String dimensionId = world.context().dimensionId();
-        if (exploration == null || dimensionId == null) {
+        if (exploration == null || dimensionId == null || !enabled) {
             return Collections.emptyList();
         }
-        return cull(exploration.markersIn(dimensionId), viewport, CULL_MARGIN);
+        List<CustomMarker> all = exploration.markersIn(dimensionId);
+        List<CustomMarker> shown = new ArrayList<CustomMarker>(all.size());
+        for (int i = 0; i < all.size(); i++) {
+            if (isMarkerShown(world, all.get(i))) {
+                shown.add(all.get(i));
+            }
+        }
+        return shown;
+    }
+
+    /** The shown markers of the world's current dimension that are on screen, in creation order. */
+    public List<CustomMarker> visibleMarkers(ActiveWorld world, MapViewport viewport) {
+        return cull(shownMarkers(world), viewport, CULL_MARGIN);
     }
 
     /** Where a marker's symbol is centred: the middle of its block. */
@@ -148,11 +181,8 @@ public final class CustomMarkerLayer implements MapLayer {
         return onScreen;
     }
 
-    /** Every drawn marker as something a click can pick; nothing while the layer is switched off. */
+    /** Every drawn marker as something a click can pick; exactly the markers {@link #render} draws. */
     public List<MapHitTest.Candidate<Object>> hitCandidates(ActiveWorld world, MapViewport viewport) {
-        if (!enabled || !appliesTo(world.context().dimensionId())) {
-            return Collections.emptyList();
-        }
         List<CustomMarker> onScreen = visibleMarkers(world, viewport);
         List<MapHitTest.Candidate<Object>> candidates =
                 new ArrayList<MapHitTest.Candidate<Object>>(onScreen.size());

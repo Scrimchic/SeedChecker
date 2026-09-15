@@ -6,6 +6,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import com.scrimchic.seedchecker.SeedChecker;
 import com.scrimchic.seedchecker.client.biome.BiomeTileManager;
 import com.scrimchic.seedchecker.client.keybind.SeedCheckerKeyBindings;
+import com.scrimchic.seedchecker.client.map.MapSettingsManager;
 import com.scrimchic.seedchecker.client.structure.StrongholdManager;
 import com.scrimchic.seedchecker.client.structure.StructureGeometryManager;
 import com.scrimchic.seedchecker.client.structure.StructureValidationManager;
@@ -20,6 +21,8 @@ public final class SeedCheckerClient implements ClientModInitializer {
         // never from the common entrypoint - a dedicated server must not load client classes.
         WorldProfileManager.initClient(
                 FabricLoader.getInstance().getConfigDir().resolve(SeedChecker.MOD_ID));
+        // Client-wide map preferences, in the same config directory but in no world's.
+        MapSettingsManager.initClient(FabricLoader.getInstance().getConfigDir().resolve(SeedChecker.MOD_ID));
         WorldgenWorkers.initClient();
         BiomeTileManager.initClient();
         StructureValidationManager.initClient();

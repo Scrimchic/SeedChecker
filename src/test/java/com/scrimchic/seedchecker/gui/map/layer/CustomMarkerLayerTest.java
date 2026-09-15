@@ -15,6 +15,7 @@ import com.scrimchic.seedchecker.client.exploration.ExplorationManager;
 import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.exploration.CustomMarker;
+import com.scrimchic.seedchecker.exploration.ExplorationFilters;
 import com.scrimchic.seedchecker.exploration.MarkerType;
 import com.scrimchic.seedchecker.gui.map.MapHitTest;
 import com.scrimchic.seedchecker.storage.ExplorationStorage;
@@ -59,7 +60,7 @@ class CustomMarkerLayerTest {
     @Test
     void markersWorkInAWorldWhoseSeedIsUnknown(@TempDir Path root) {
         ExplorationManager exploration = manager(root);
-        CustomMarkerLayer layer = new CustomMarkerLayer(exploration);
+        CustomMarkerLayer layer = new CustomMarkerLayer(new ExplorationFilters(), exploration);
         ActiveWorld world = unknownSeedWorld(OVERWORLD);
         assertFalse(world.hasSeed());
         MapViewport view = viewport(1.0, 0, 0);
@@ -77,7 +78,7 @@ class CustomMarkerLayerTest {
     @Test
     void onlyTheCurrentDimensionsMarkersAreDrawnOrPicked(@TempDir Path root) {
         ExplorationManager exploration = manager(root);
-        CustomMarkerLayer layer = new CustomMarkerLayer(exploration);
+        CustomMarkerLayer layer = new CustomMarkerLayer(new ExplorationFilters(), exploration);
         CustomMarker overworld = exploration.createMarker(OVERWORLD, 0, null, 0, MarkerType.PORTAL, null, null);
         CustomMarker nether = exploration.createMarker(NETHER, 0, null, 0, MarkerType.PORTAL, null, null);
         MapViewport view = viewport(1.0, 0, 0);
@@ -98,7 +99,7 @@ class CustomMarkerLayerTest {
     @Test
     void offScreenMarkersAreCulledWithAMargin(@TempDir Path root) {
         ExplorationManager exploration = manager(root);
-        CustomMarkerLayer layer = new CustomMarkerLayer(exploration);
+        CustomMarkerLayer layer = new CustomMarkerLayer(new ExplorationFilters(), exploration);
         // 320 by 240 pixels at one pixel a block, centred on 0,0: blocks -160..159 by -120..119.
         exploration.createMarker(OVERWORLD, 0, null, 0, MarkerType.BASE, "centre", null);
         exploration.createMarker(OVERWORLD, 165, null, 0, MarkerType.BASE, "just past the edge", null);
@@ -118,9 +119,49 @@ class CustomMarkerLayerTest {
     }
 
     @Test
+    void aHiddenTypeIsNeitherDrawnNorPickedNorListedUntilToggledBack(@TempDir Path root) {
+        ExplorationManager exploration = manager(root);
+        ExplorationFilters filters = new ExplorationFilters();
+        CustomMarkerLayer layer = new CustomMarkerLayer(filters, exploration);
+        ActiveWorld world = unknownSeedWorld(OVERWORLD);
+        MapViewport view = viewport(1.0, 0, 0);
+        MarkerType[] types = MarkerType.values();
+        for (int i = 0; i < types.length; i++) {
+            exploration.createMarker(OVERWORLD, i * 20 - 80, null, 0, types[i], types[i].id(), null);
+        }
+
+        for (MarkerType hidden : types) {
+            filters.setMarkerTypeVisible(hidden, false);
+            List<CustomMarker> drawn = layer.visibleMarkers(world, view);
+            List<CustomMarker> listed = layer.shownMarkers(world);
+            List<MapHitTest.Candidate<Object>> pickable = layer.hitCandidates(world, view);
+            assertEquals(types.length - 1, drawn.size(), hidden.toString());
+            assertEquals(types.length - 1, listed.size());
+            assertEquals(types.length - 1, pickable.size());
+            for (CustomMarker marker : listed) {
+                assertTrue(marker.type() != hidden);
+            }
+            CustomMarker hiddenMarker = null;
+            for (CustomMarker marker : exploration.markersIn(OVERWORLD)) {
+                if (marker.type() == hidden) {
+                    hiddenMarker = marker;
+                }
+            }
+            assertFalse(layer.isMarkerShown(world, hiddenMarker));
+            assertNull(MapHitTest.pick(pickable, CustomMarkerLayer.screenX(view, hiddenMarker),
+                    CustomMarkerLayer.screenY(view, hiddenMarker)), hidden + " must not be clickable");
+
+            filters.setMarkerTypeVisible(hidden, true);
+            assertTrue(layer.isMarkerShown(world, hiddenMarker));
+            assertEquals(hiddenMarker, MapHitTest.pick(layer.hitCandidates(world, view),
+                    CustomMarkerLayer.screenX(view, hiddenMarker), CustomMarkerLayer.screenY(view, hiddenMarker)).target());
+        }
+    }
+
+    @Test
     void theClickRadiusIsTheSameInPixelsAtEveryZoom(@TempDir Path root) {
         ExplorationManager exploration = manager(root);
-        CustomMarkerLayer layer = new CustomMarkerLayer(exploration);
+        CustomMarkerLayer layer = new CustomMarkerLayer(new ExplorationFilters(), exploration);
         CustomMarker marker = exploration.createMarker(OVERWORLD, -3000, 64, -3000, MarkerType.DANGER, null, null);
         for (double scale : new double[] {MapViewport.MIN_SCALE, 1.0 / 4, 1.0, 4.0, MapViewport.MAX_SCALE}) {
             MapViewport view = viewport(scale, -3000, -3000);

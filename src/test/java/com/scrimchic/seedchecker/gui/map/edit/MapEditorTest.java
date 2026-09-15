@@ -110,12 +110,72 @@ class MapEditorTest {
         ExplorationManager exploration = open(root);
         MapEditor editor = new MapEditor(exploration);
         editor.beginStructureNote(VILLAGE, "village");
-        for (int i = 0; i < ExplorationText.NOTE_MAX_LENGTH + 50; i++) {
+        for (int i = 0; i < ExplorationText.NOTE_MAX_CODE_POINTS + 50; i++) {
             editor.typeCodePoint('a' + i % 26);
         }
-        assertEquals(ExplorationText.NOTE_MAX_LENGTH, editor.note().length());
+        assertEquals(ExplorationText.NOTE_MAX_CODE_POINTS, editor.note().codePointCount());
         editor.save();
-        assertEquals(ExplorationText.NOTE_MAX_LENGTH, exploration.noteOf(VILLAGE).length());
+        assertEquals(ExplorationText.NOTE_MAX_CODE_POINTS, exploration.noteOf(VILLAGE).length());
+    }
+
+    // ------------------------------------------------------------ paste
+
+    @Test
+    void pastingIntoANoteKeepsItsLinesAndUnicodeAtTheCursor(@TempDir Path root) {
+        ExplorationManager exploration = open(root);
+        MapEditor editor = new MapEditor(exploration);
+        editor.beginStructureNote(VILLAGE, "village");
+        type(editor, "head tail");
+        for (int i = 0; i < 5; i++) {
+            editor.handleKey(EditorKey.LEFT, false);
+        }
+        assertTrue(editor.paste("\r\nскриня 🏰\r\nспавнер ✓\n"));
+        editor.save();
+        assertEquals("head\nскриня 🏰\nспавнер ✓\n tail", exploration.noteOf(VILLAGE));
+    }
+
+    @Test
+    void pastingIntoALabelKeepsItOneLine(@TempDir Path root) {
+        ExplorationManager exploration = open(root);
+        MapEditor editor = new MapEditor(exploration);
+        editor.beginCreateMarker(OVERWORLD, 0, null, 0);
+        editor.paste("Main\nbase\t🏠");
+        assertEquals("Main base 🏠", editor.label().text());
+        editor.handleKey(EditorKey.TAB, false);
+        editor.paste("line one\nline two");
+        editor.save();
+        CustomMarker created = exploration.marker(editor.savedMarkerId());
+        assertEquals("Main base 🏠", created.label());
+        assertEquals("line one\nline two", created.note());
+    }
+
+    @Test
+    void pastingNearTheLimitKeepsWhatFitsAndNeverHalfAnEmoji(@TempDir Path root) {
+        ExplorationManager exploration = open(root);
+        MapEditor editor = new MapEditor(exploration);
+        editor.beginStructureNote(VILLAGE, "village");
+        StringBuilder almost = new StringBuilder();
+        for (int i = 0; i < ExplorationText.NOTE_MAX_CODE_POINTS - 2; i++) {
+            almost.append('a');
+        }
+        editor.paste(almost.toString());
+        editor.paste("🏰🏰🏰");
+        assertEquals(ExplorationText.NOTE_MAX_CODE_POINTS, editor.note().codePointCount());
+        editor.save();
+        String note = exploration.noteOf(VILLAGE);
+        assertTrue(note.endsWith("🏰🏰"));
+        assertEquals(ExplorationText.NOTE_MAX_CODE_POINTS, ExplorationText.codePointLength(note));
+    }
+
+    @Test
+    void pasteIsSwallowedByADeletionAndIgnoredWithoutAnEditor(@TempDir Path root) {
+        ExplorationManager exploration = open(root);
+        CustomMarker marker = exploration.createMarker(OVERWORLD, 0, null, 0, MarkerType.BASE, null, null);
+        MapEditor editor = new MapEditor(exploration);
+        assertFalse(editor.paste("x"), "no editor, the screen may use the key");
+        editor.beginDeleteMarker(marker.id());
+        assertTrue(editor.paste("confirm"));
+        assertEquals(MapEditor.Mode.DELETE_MARKER, editor.mode());
     }
 
     // ------------------------------------------------------------ markers

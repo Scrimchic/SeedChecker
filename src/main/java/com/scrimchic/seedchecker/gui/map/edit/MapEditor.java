@@ -62,8 +62,8 @@ public final class MapEditor {
     private Field focus = Field.NOTE;
     private String savedMarkerId;
 
-    private final TextBuffer label = new TextBuffer(ExplorationText.LABEL_MAX_LENGTH, false);
-    private final TextBuffer note = new TextBuffer(ExplorationText.NOTE_MAX_LENGTH, true);
+    private final TextBuffer label = new TextBuffer(ExplorationText.LABEL_MAX_CODE_POINTS, false);
+    private final TextBuffer note = new TextBuffer(ExplorationText.NOTE_MAX_CODE_POINTS, true);
 
     public MapEditor(ExplorationManager exploration) {
         this.exploration = exploration;
@@ -163,6 +163,22 @@ public final class MapEditor {
         }
         if (acceptsText()) {
             focusedBuffer().insert(codePoint);
+        }
+        return true;
+    }
+
+    /**
+     * Pastes text into the focused field. The editor is handed the clipboard's text; it never reads
+     * a clipboard itself.
+     *
+     * @return whether the editor consumed it, which it does while open
+     */
+    public boolean paste(String clipboardText) {
+        if (!isActive()) {
+            return false;
+        }
+        if (acceptsText()) {
+            focusedBuffer().paste(clipboardText);
         }
         return true;
     }

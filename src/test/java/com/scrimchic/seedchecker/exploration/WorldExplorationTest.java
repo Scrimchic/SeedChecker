@@ -65,13 +65,14 @@ class WorldExplorationTest {
         assertFalse(exploration.setNote(key, "перший рядок\nsecond ✓\nthird 🏰"));
 
         StringBuilder huge = new StringBuilder();
-        while (huge.length() < ExplorationText.NOTE_MAX_LENGTH - 1) {
+        while (huge.length() < ExplorationText.NOTE_MAX_CODE_POINTS - 1) {
             huge.append('a');
         }
         huge.append("🏰🏰");
         exploration.setNote(key, huge.toString());
         String stored = exploration.noteOf(key);
-        assertTrue(stored.length() <= ExplorationText.NOTE_MAX_LENGTH);
+        assertEquals(ExplorationText.NOTE_MAX_CODE_POINTS, ExplorationText.codePointLength(stored),
+                "the first castle is the last character that fits");
         assertFalse(Character.isHighSurrogate(stored.charAt(stored.length() - 1)), "never half a code point");
     }
 

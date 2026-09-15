@@ -35,6 +35,11 @@ public final class SlimeChunkLayer implements MapLayer {
     private boolean enabled = true;
 
     @Override
+    public String id() {
+        return "slime_chunks";
+    }
+
+    @Override
     public String displayName() {
         return "Slime Chunks";
     }

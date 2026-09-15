@@ -1,11 +1,13 @@
 package com.scrimchic.seedchecker.gui.map;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
 import com.scrimchic.seedchecker.client.biome.BiomeTileManager;
 import com.scrimchic.seedchecker.client.exploration.ExplorationManager;
+import com.scrimchic.seedchecker.client.map.MapSettingsManager;
 import com.scrimchic.seedchecker.client.structure.StrongholdManager;
 import com.scrimchic.seedchecker.client.structure.StructureGeometryManager;
 import com.scrimchic.seedchecker.client.structure.StructureValidationManager;
@@ -14,6 +16,7 @@ import com.scrimchic.seedchecker.core.map.ChunkRange;
 import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.core.map.MapViewportMemory;
 import com.scrimchic.seedchecker.exploration.CustomMarker;
+import com.scrimchic.seedchecker.exploration.ExplorationFilters;
 import com.scrimchic.seedchecker.exploration.MarkerType;
 import com.scrimchic.seedchecker.exploration.StructureKey;
 import com.scrimchic.seedchecker.exploration.StructureStatus;
@@ -27,6 +30,7 @@ import com.scrimchic.seedchecker.gui.map.layer.MapLayers;
 import com.scrimchic.seedchecker.gui.map.layer.StrongholdLayer;
 import com.scrimchic.seedchecker.gui.map.layer.StructureLayer;
 import com.scrimchic.seedchecker.gui.map.layer.StructureMarkerLayer;
+import com.scrimchic.seedchecker.platform.ClipboardBridge;
 import com.scrimchic.seedchecker.platform.MinecraftBridge;
 import com.scrimchic.seedchecker.platform.PlayerNavigator;
 import com.scrimchic.seedchecker.platform.VanillaStructureData;
@@ -74,13 +78,20 @@ import net.minecraft.network.chat.TranslatableComponent;*/
  * <h2>Interaction</h2>
  *
  * <p>Left click runs a panel action, or selects the object under the cursor - a predicted structure
- * or a custom marker, whichever {@link MapHitTest} picks - and starts panning. Right click on the map
- * places the pointer, the position "Add marker" and "Move" use: a button is clicked on a panel, so
- * the cursor itself can never be the target.
+ * or a custom marker, whichever {@link MapHitTest} picks - and starts panning; a second click on the
+ * same object opens its editor. Right click on the map places the pointer, the position "Add marker"
+ * and "Move" use: a button is clicked on a panel, so the cursor itself can never be the target. The
+ * wheel scrolls a panel the cursor is over and zooms the map everywhere else.
  *
  * <p>What is being edited, and every rule about it, lives in {@link MapEditor}; the screen only draws
  * it and forwards input. While an editor is open it owns the keyboard, clicks on the map pan but do
- * not change the selection, and Escape closes the editor rather than the screen.
+ * not change the selection, and the layer and filter switches are closed - a switch that hid the
+ * object being edited would otherwise take the draft with it. Escape and Delete follow
+ * {@link MapShortcuts}.
+ *
+ * <p>What is drawn, picked, listed and kept selected is decided by the layers' own visibility rules -
+ * {@link StructureMarkerLayer#isShown} and {@link CustomMarkerLayer#isMarkerShown} - over one shared
+ * set of exploration filters, which with the layer switches are the client's saved map preferences.
  */
 public final class MapScreen extends Screen {
 
@@ -131,6 +142,12 @@ public final class MapScreen extends Screen {
     /** How much of a label a side panel shows. */
     private static final int LABEL_PREVIEW_CHARS = 32;
 
+    /** The marker list shows this many of the nearest markers; the rest are counted. */
+    private static final int MARKER_LIST_LIMIT = 50;
+
+    /** How much of a label a marker list row shows. */
+    private static final int MARKER_LIST_LABEL_CHARS = 24;
+
     private static final int ACTION_EDIT_SEED = 1;
     private static final int ACTION_CLEAR_SEED = 2;
     private static final int ACTION_CENTER_PLAYER = 3;
@@ -163,6 +180,20 @@ public final class MapScreen extends Screen {
     /** One action per marker type in the editor, from here upwards in declaration order. */
     private static final int ACTION_EDITOR_TYPE_BASE = 60;
 
+    /** Layer toggles occupy the action ids from here upwards, one per layer. */
+    private static final int ACTION_LAYER_BASE = 100;
+
+    /** One filter toggle per exploration status, and one per marker type. */
+    private static final int ACTION_STATUS_FILTER_BASE = 200;
+    private static final int ACTION_MARKER_FILTER_BASE = 210;
+    private static final int ACTION_FILTER_ALL_STRUCTURES = 220;
+    private static final int ACTION_FILTER_UNVISITED_ONLY = 221;
+    private static final int ACTION_FILTER_HIDE_LOOTED = 222;
+    private static final int ACTION_FILTER_ALL_MARKERS = 223;
+
+    /** One row of the marker list each, from here upwards. */
+    private static final int ACTION_MARKER_LIST_BASE = 1000;
+
     /**
      * How far a click may miss a structure's chunk and still hit its marker, in chunks.
      *
@@ -171,18 +202,15 @@ public final class MapScreen extends Screen {
      */
     private static final int MAX_SELECT_CHUNK_RADIUS = 4;
 
-    /** Layer toggles occupy the action ids from here upwards, one per layer. */
-    private static final int ACTION_LAYER_BASE = 100;
-
     /**
-     * Layer switches live for the whole client session rather than per screen, so reopening the
-     * map does not undo them. Saving them to disk comes with the rest of the storage work.
+     * The map's layers, built once per client with the saved map preferences applied: which layers are
+     * on, and the exploration filters every structure and marker layer shares.
      */
-    private static final MapLayers LAYERS = MapLayers.createDefault();
+    private static final MapLayers LAYERS = createLayers();
 
     /**
-     * Where the map was left, per world, for the life of the client. Like the layer switches it is
-     * session state rather than a saved setting.
+     * Where the map was left, per world, for the life of the client. Session state rather than a saved
+     * setting.
      */
     private static final MapViewportMemory MEMORY = new MapViewportMemory();
 
@@ -212,6 +240,8 @@ public final class MapScreen extends Screen {
     /** One line of feedback for the last selection action, e.g. that a copy happened. */
     private String selectionNotice;
 
+    private final DoubleClickDetector doubleClicks = new DoubleClickDetector();
+
     /** Created on first use: the exploration manager exists once the client has started. */
     private MapEditor editor;
     private String editorNotice;
@@ -234,6 +264,17 @@ public final class MapScreen extends Screen {
     /** The world and dimension the selection, pointer and editor belong to. */
     private String interactionKey;
 
+    /** Structures drawn this frame per exploration status, by ordinal. */
+    private final int[] drawnStatusCounts = new int[StructureStatus.values().length];
+
+    /** The marker list, sorted, and what it was sorted for. */
+    private List<MarkerList.Entry> markerListEntries = Collections.emptyList();
+    private List<CustomMarker> markerListSource;
+    private String markerListKey = "";
+
+    /** The marker ids of the list rows drawn last frame, by row. */
+    private String[] listedMarkerIds = new String[0];
+
     private boolean followPlayer;
 
     private boolean editingSeed;
@@ -250,6 +291,17 @@ public final class MapScreen extends Screen {
         //?} else {
         /*return new TranslatableComponent(TITLE_KEY);*/
         //?}
+    }
+
+    private static MapLayers createLayers() {
+        MapSettingsManager settings = MapSettingsManager.get();
+        MapLayers layers = MapLayers.createDefault(settings.filters());
+        layers.applyPreferences(settings.preferences());
+        return layers;
+    }
+
+    private static ExplorationFilters filters() {
+        return MapSettingsManager.get().filters();
     }
 
     /**
@@ -328,6 +380,7 @@ public final class MapScreen extends Screen {
         canvas.fill(0, 0, this.width, this.height, COLOR_BACKGROUND);
         drawGrid(canvas);
         LAYERS.renderAll(canvas, viewport, visible, world);
+        countDrawnStatuses(world, visible);
         drawSelectedBounds(canvas, world);
         drawSelectedMarker(canvas);
         drawPointer(canvas);
@@ -339,7 +392,7 @@ public final class MapScreen extends Screen {
 
         // Both left panels share the screen's height. The debug readout is capped at a third of it
         // and the context panel takes the rest; either scrolls rather than running off a small
-        // window, which the layer list alone would do below a GUI height of about 400.
+        // window.
         debugPanel = buildDebugPanel(mouseX, mouseY);
         debugPanel.limitHeight((this.height - PANEL_MARGIN * 3) / 3, debugScroll);
         int debugHeight = debugPanel.height(canvas);
@@ -356,9 +409,23 @@ public final class MapScreen extends Screen {
         drawRightPanel(canvas, world, player, mouseX, mouseY);
     }
 
+    /** What the structure layers that drew this frame drew, by exploration status. */
+    private void countDrawnStatuses(ActiveWorld world, ChunkRange visible) {
+        java.util.Arrays.fill(drawnStatusCounts, 0);
+        String dimensionId = world.context().dimensionId();
+        List<MapLayer> layers = LAYERS.all();
+        for (int i = 0; i < layers.size(); i++) {
+            MapLayer layer = layers.get(i);
+            if (layer instanceof StructureMarkerLayer
+                    && MapLayers.isDrawing(layer, dimensionId, world, viewport, visible)) {
+                ((StructureMarkerLayer) layer).addDrawnStatusCounts(drawnStatusCounts);
+            }
+        }
+    }
+
     /**
      * A selection, the pointer and an open editor belong to one world and dimension; a structure
-     * selection also to one predicted map, and a marker selection to a marker that still exists.
+     * selection also to one predicted map, and every selection to an object still shown.
      */
     private void dropStaleInteraction(ActiveWorld world, BiomeMapKey structureMap) {
         String key = memoryKeyOf(world);
@@ -381,7 +448,12 @@ public final class MapScreen extends Screen {
                 editor().takeResult();
             }
             clearSelection();
-        } else if (selection.isMarker() && selectedMarker() == null) {
+            return;
+        }
+        // Hidden by a layer switch, a filter, or a status the filters hide: gone from the map, so gone
+        // from the selection. Not while an editor is open, whose subject is kept until it closes - and
+        // the switches are closed meanwhile, so nothing but its own save can hide it.
+        if (!editor().isActive() && !selection.isShown(world, ExplorationManager.get(), LAYERS.customMarkers())) {
             clearSelection();
         }
     }
@@ -401,12 +473,13 @@ public final class MapScreen extends Screen {
             rightPanel = panel;
             return;
         }
-        if (selection == null) {
+        CustomMarker marker = selectedMarker();
+        if (selection == null || (selection.isMarker() && marker == null)) {
             rightPanel = null;
             return;
         }
         TextPanel panel = selection.isMarker()
-                ? buildMarkerPanel(world, player, selectedMarker())
+                ? buildMarkerPanel(player, marker)
                 : buildStructurePanel(world);
         panel.limitHeight(maxHeight, selectionScroll);
         panel.draw(canvas, Math.max(PANEL_MARGIN, this.width - PANEL_MARGIN - panel.width(canvas)),
@@ -482,7 +555,7 @@ public final class MapScreen extends Screen {
     }
 
     /**
-     * The player's record of the selected structure: its status as one row of buttons, and its note.
+     * The player's record of the selected structure: its status as rows of buttons, and its note.
      *
      * <p>Offered for any structure the map is showing, exact or not - the player may have checked a
      * non-exact one in person - but not for a rejected candidate, which is not a structure.
@@ -506,6 +579,9 @@ public final class MapScreen extends Screen {
             StructureStatus[] statuses = StructureStatus.values();
             appendStatusButtons(panel, statuses, 0, 3, current);
             appendStatusButtons(panel, statuses, 3, statuses.length, current);
+            if (!filters().isStructureVisible(current)) {
+                panel.line("hidden by the filters; closes when deselected", COLOR_TEXT_DIM);
+            }
         }
         String note = exploration.noteOf(key);
         panel.line("Note", COLOR_TEXT);
@@ -518,7 +594,7 @@ public final class MapScreen extends Screen {
     }
 
     private static void appendStatusButtons(TextPanel panel, StructureStatus[] statuses, int from, int to,
-                                             StructureStatus current) {
+                                            StructureStatus current) {
         int[] actions = new int[to - from];
         String[] labels = new String[to - from];
         int[] colors = new int[to - from];
@@ -546,7 +622,7 @@ public final class MapScreen extends Screen {
     }
 
     /** A custom marker, where it is, its note, and what can be done with it. */
-    private TextPanel buildMarkerPanel(ActiveWorld world, PlayerPosition player, CustomMarker marker) {
+    private TextPanel buildMarkerPanel(PlayerPosition player, CustomMarker marker) {
         ExplorationManager exploration = ExplorationManager.get();
         TextPanel panel = new TextPanel(COLOR_PANEL, COLOR_TEXT_HOVER);
         panel.line("CUSTOM MARKER", COLOR_SECTION);
@@ -559,6 +635,10 @@ public final class MapScreen extends Screen {
         panel.line("Position", COLOR_TEXT);
         panel.line("X " + marker.x() + "   Y " + (marker.y() == null ? "unknown" : marker.y().toString())
                 + "   Z " + marker.z(), COLOR_TEXT);
+        if (player != null) {
+            panel.line(MarkerList.formatDistance(MarkerList.distance(player, marker)) + " from you",
+                    COLOR_TEXT_DIM);
+        }
 
         panel.blank();
         panel.line("Note", COLOR_TEXT);
@@ -579,6 +659,7 @@ public final class MapScreen extends Screen {
             if (player != null) {
                 panel.action(ACTION_MARKER_MOVE_PLAYER, "[Move to player]", COLOR_TEXT);
             }
+            panel.line("double-click edits, Delete asks to delete", COLOR_TEXT_DIM);
         } else {
             panel.blank();
             panel.line("read-only: " + exploration.readOnlyReason(), COLOR_TEXT_DIM);
@@ -657,14 +738,14 @@ public final class MapScreen extends Screen {
                     noteFocus ? COLOR_TEXT : COLOR_TEXT_DIM);
             appendTextArea(panel, canvas, editor.note(), textWidth, noteFocus);
         }
-        panel.line(editor.note().length() + " / " + editor.note().maxLength(), COLOR_TEXT_DIM);
+        panel.line(editor.note().codePointCount() + " / " + editor.note().maxCodePoints() + " characters",
+                COLOR_TEXT_DIM);
         panel.blank();
         panel.buttons(new int[] {ACTION_EDITOR_SAVE, ACTION_EDITOR_CANCEL}, new String[] {"[Save]", "[Cancel]"},
                 new int[] {COLOR_TEXT, COLOR_TEXT});
         panel.line("Ctrl+Enter saves, Esc cancels", COLOR_TEXT_DIM);
-        if (editor.mode() != MapEditor.Mode.STRUCTURE_NOTE) {
-            panel.line("Tab switches label and note", COLOR_TEXT_DIM);
-        }
+        panel.line(editor.mode() != MapEditor.Mode.STRUCTURE_NOTE
+                ? "Tab: label/note, Ctrl+V pastes" : "Ctrl+V pastes", COLOR_TEXT_DIM);
         appendEditorNotice(panel);
         return panel;
     }
@@ -786,9 +867,6 @@ public final class MapScreen extends Screen {
                 selectionNotice = "saved";
                 break;
             case DELETED:
-                editorNotice = null;
-                clearSelection();
-                break;
             case GONE:
                 editorNotice = null;
                 clearSelection();
@@ -809,6 +887,7 @@ public final class MapScreen extends Screen {
         selection = null;
         rightPanel = null;
         selectionNotice = null;
+        doubleClicks.reset();
     }
 
     /** @return the selected marker, or {@code null} when none is selected or it is gone or elsewhere */
@@ -1031,7 +1110,10 @@ public final class MapScreen extends Screen {
 
     // ----------------------------------------------------------- left panels
 
-    /** World, player, exploration and layers, top left. Grouped so the interesting part is findable. */
+    /**
+     * World, player, exploration, filters, layers and the marker list, top left. The list is last
+     * because it is the longest; the panel scrolls.
+     */
     private TextPanel buildContextPanel(ActiveWorld world, PlayerPosition player, ChunkRange visible) {
         WorldContext context = world.context();
         TextPanel panel = new TextPanel(COLOR_PANEL, COLOR_TEXT_HOVER);
@@ -1059,12 +1141,17 @@ public final class MapScreen extends Screen {
         appendExplorationRows(panel, world);
 
         panel.blank();
+        panel.line("EXPLORATION FILTERS", COLOR_SECTION);
+        appendFilterRows(panel);
+
+        panel.blank();
         panel.line("LAYERS (click to toggle)", COLOR_SECTION);
         // Says it out loud: exact structures are vanilla's answer, the rest are still candidates.
         panel.line("exact where vanilla is reproduced, else candidates", COLOR_TEXT_DIM);
         panel.action(ACTION_RAW_CANDIDATES,
                 "Raw candidates: " + (StructureLayer.showRawCandidates() ? "ON" : "OFF"),
                 StructureLayer.showRawCandidates() ? COLOR_TEXT : COLOR_TEXT_DIM);
+        boolean switchable = !editor().isActive();
         List<MapLayer> layers = LAYERS.all();
         String dimensionId = world.context().dimensionId();
         for (int i = 0; i < layers.size(); i++) {
@@ -1074,10 +1161,16 @@ public final class MapScreen extends Screen {
                 continue;
             }
             String reason = layer.unavailableReason(world, viewport, visible);
-            panel.action(ACTION_LAYER_BASE + i,
-                    layer.displayName() + ": " + layerState(layer, reason),
-                    layer.isEnabled() && reason == null ? COLOR_TEXT : COLOR_TEXT_DIM);
+            String text = layer.displayName() + ": " + layerState(layer, reason);
+            int color = layer.isEnabled() && reason == null ? COLOR_TEXT : COLOR_TEXT_DIM;
+            if (switchable) {
+                panel.action(ACTION_LAYER_BASE + i, text, color);
+            } else {
+                panel.line(text, COLOR_TEXT_DIM);
+            }
         }
+
+        appendMarkerListRows(panel, world, player);
         return panel;
     }
 
@@ -1098,8 +1191,8 @@ public final class MapScreen extends Screen {
     }
 
     /**
-     * Markers in this dimension, the pointer, and annotations kept for another seed. Works with or
-     * without a seed: nothing here is predicted.
+     * Markers in this dimension, what the structure layers drew by status, the pointer, and
+     * annotations kept for another seed. Works with or without a seed: nothing here is predicted.
      */
     private void appendExplorationRows(TextPanel panel, ActiveWorld world) {
         ExplorationManager exploration = ExplorationManager.get();
@@ -1109,6 +1202,10 @@ public final class MapScreen extends Screen {
         }
         panel.line("Markers here " + exploration.markersIn(world.context().dimensionId()).size(),
                 COLOR_TEXT_DIM);
+        String counts = drawnStatusSummary();
+        if (counts != null) {
+            panel.line("On screen " + counts, COLOR_TEXT_DIM);
+        }
         if (pointerSet) {
             panel.line("Pointer   " + pointerX + ", " + pointerZ, COLOR_TEXT);
             if (exploration.isWritable()) {
@@ -1123,10 +1220,144 @@ public final class MapScreen extends Screen {
         int otherSeeds = exploration.structuresNotPredictedFrom(world.hasSeed() ? Long.valueOf(world.seed()) : null);
         if (otherSeeds > 0) {
             panel.line("Annotations from other seeds: " + otherSeeds, COLOR_TEXT_DIM);
+            panel.line("  kept for a seed this map is not drawn from", COLOR_TEXT_DIM);
         }
         if (!exploration.isWritable()) {
             panel.line("read-only: " + exploration.readOnlyReason(), COLOR_TEXT_DIM);
         }
+    }
+
+    /** The structures drawn this frame, by status, leaving out statuses none were drawn of. */
+    private String drawnStatusSummary() {
+        StringBuilder summary = new StringBuilder();
+        StructureStatus[] statuses = StructureStatus.values();
+        for (int i = 0; i < statuses.length; i++) {
+            if (drawnStatusCounts[i] > 0) {
+                if (summary.length() > 0) {
+                    summary.append(", ");
+                }
+                summary.append(drawnStatusCounts[i]).append(' ')
+                        .append(statuses[i].displayName().toLowerCase(Locale.ROOT));
+            }
+        }
+        return summary.length() == 0 ? null : summary.toString();
+    }
+
+    /**
+     * The exploration filters as rows of buttons, and three shortcuts over the same state. Closed while
+     * an editor is open.
+     */
+    private void appendFilterRows(TextPanel panel) {
+        if (editor().isActive()) {
+            panel.line("close the editor to change filters", COLOR_TEXT_DIM);
+            return;
+        }
+        ExplorationFilters filters = filters();
+        panel.line("Structures", COLOR_TEXT);
+        StructureStatus[] statuses = StructureStatus.values();
+        appendStatusFilterRow(panel, filters, statuses, 0, 3);
+        appendStatusFilterRow(panel, filters, statuses, 3, statuses.length);
+        panel.buttons(new int[] {ACTION_FILTER_ALL_STRUCTURES, ACTION_FILTER_UNVISITED_ONLY, ACTION_FILTER_HIDE_LOOTED},
+                new String[] {"[All]", "[Unvisited only]", "[Hide looted]"},
+                new int[] {COLOR_TEXT, COLOR_TEXT, COLOR_TEXT});
+        panel.line("Markers", COLOR_TEXT);
+        MarkerType[] types = MarkerType.values();
+        appendMarkerFilterRow(panel, filters, types, 0, 3, false);
+        appendMarkerFilterRow(panel, filters, types, 3, 6, false);
+        appendMarkerFilterRow(panel, filters, types, 6, types.length, true);
+    }
+
+    private static String checkbox(boolean on, String name) {
+        return (on ? "[x] " : "[ ] ") + name;
+    }
+
+    private static void appendStatusFilterRow(TextPanel panel, ExplorationFilters filters, StructureStatus[] statuses,
+                                              int from, int to) {
+        int[] actions = new int[to - from];
+        String[] labels = new String[to - from];
+        int[] colors = new int[to - from];
+        for (int i = from; i < to; i++) {
+            boolean on = filters.showsStatus(statuses[i]);
+            actions[i - from] = ACTION_STATUS_FILTER_BASE + i;
+            labels[i - from] = checkbox(on, statuses[i].displayName());
+            colors[i - from] = on ? COLOR_TEXT : COLOR_TEXT_DIM;
+        }
+        panel.buttons(actions, labels, colors);
+    }
+
+    private static void appendMarkerFilterRow(TextPanel panel, ExplorationFilters filters, MarkerType[] types,
+                                              int from, int to, boolean withAll) {
+        int count = to - from + (withAll ? 1 : 0);
+        int[] actions = new int[count];
+        String[] labels = new String[count];
+        int[] colors = new int[count];
+        for (int i = from; i < to; i++) {
+            boolean on = filters.showsMarkerType(types[i]);
+            actions[i - from] = ACTION_MARKER_FILTER_BASE + i;
+            labels[i - from] = checkbox(on, types[i].displayName());
+            colors[i - from] = on ? COLOR_TEXT : COLOR_TEXT_DIM;
+        }
+        if (withAll) {
+            actions[count - 1] = ACTION_FILTER_ALL_MARKERS;
+            labels[count - 1] = "[All markers]";
+            colors[count - 1] = COLOR_TEXT;
+        }
+        panel.buttons(actions, labels, colors);
+    }
+
+    /**
+     * The shown markers of this dimension, nearest first while the player is here. A row selects its
+     * marker and centres the map on it; it never teleports.
+     */
+    private void appendMarkerListRows(TextPanel panel, ActiveWorld world, PlayerPosition player) {
+        ExplorationManager exploration = ExplorationManager.get();
+        String dimensionId = world.context().dimensionId();
+        if (!exploration.isActive() || dimensionId == null) {
+            listedMarkerIds = new String[0];
+            return;
+        }
+        CustomMarkerLayer layer = LAYERS.customMarkers();
+        List<MarkerList.Entry> entries = markerListEntries(world, player);
+        int total = exploration.markersIn(dimensionId).size();
+        panel.blank();
+        panel.line("MARKERS  " + entries.size() + " shown of " + total + " here", COLOR_SECTION);
+        if (!layer.isEnabled()) {
+            panel.line("the Custom Markers layer is off", COLOR_TEXT_DIM);
+        } else if (entries.isEmpty()) {
+            panel.line(total == 0 ? "none in this dimension yet" : "all hidden by the filters", COLOR_TEXT_DIM);
+        }
+        int rows = Math.min(entries.size(), MARKER_LIST_LIMIT);
+        listedMarkerIds = new String[rows];
+        String selectedId = selection != null && selection.isMarker() ? selection.markerId() : null;
+        for (int i = 0; i < rows; i++) {
+            MarkerList.Entry entry = entries.get(i);
+            listedMarkerIds[i] = entry.marker().id();
+            boolean selected = entry.marker().id().equals(selectedId);
+            panel.action(ACTION_MARKER_LIST_BASE + i, (selected ? "> " : "  ") + entry.text(MARKER_LIST_LABEL_CHARS),
+                    selected ? COLOR_TEXT : COLOR_TEXT_DIM);
+        }
+        if (entries.size() > rows) {
+            panel.line("  +" + (entries.size() - rows) + (player != null ? " more, farther away" : " more"),
+                    COLOR_TEXT_DIM);
+        }
+    }
+
+    /**
+     * The sorted marker list, sorted again only when the markers, the filters, the layer switch or the
+     * player's block changed - not every frame.
+     */
+    private List<MarkerList.Entry> markerListEntries(ActiveWorld world, PlayerPosition player) {
+        String dimensionId = world.context().dimensionId();
+        List<CustomMarker> source = ExplorationManager.get().markersIn(dimensionId);
+        CustomMarkerLayer layer = LAYERS.customMarkers();
+        String key = dimensionId + "|" + filters().revision() + "|" + layer.isEnabled() + "|"
+                + (player == null ? "-" : player.blockX() + "," + player.blockZ());
+        if (source != markerListSource || !key.equals(markerListKey)) {
+            markerListEntries = MarkerList.of(layer.shownMarkers(world), player);
+            markerListSource = source;
+            markerListKey = key;
+        }
+        return markerListEntries;
     }
 
     private void appendSeedRows(TextPanel panel, ActiveWorld world) {
@@ -1228,8 +1459,8 @@ public final class MapScreen extends Screen {
     }
 
     /**
-     * Whatever structure candidate sits in the chunk under the cursor, and what the biome check
-     * made of it. The sanity check for "why is this marker here, or missing".
+     * Whatever structure sits in the chunk under the cursor, and what the biome check made of it - as
+     * long as it is shown, by the same rule that draws it.
      */
     private void appendCursorStructures(TextPanel panel, int chunkX, int chunkZ) {
         ActiveWorld world = WorldProfileManager.get().currentWorld();
@@ -1292,8 +1523,9 @@ public final class MapScreen extends Screen {
     // ------------------------------------------------------------ interaction
 
     /**
-     * Left click runs a panel action, or selects what is under the cursor and starts panning; right
-     * click places the pointer. A click on a panel never reaches the map.
+     * Left click runs a panel action, or selects what is under the cursor and starts panning - and a
+     * second click on the same object opens it; right click places the pointer. A click on a panel
+     * never reaches the map.
      */
     private boolean onPress(double mouseX, double mouseY, int button) {
         if (button == 1) {
@@ -1318,11 +1550,38 @@ public final class MapScreen extends Screen {
         // An open editor keeps its subject: the map still pans, but the selection does not move.
         if (!editor().isActive()) {
             selectAt(mouseX, mouseY);
+            if (doubleClicks.click(System.currentTimeMillis(), mouseX, mouseY,
+                    selection == null ? null : selection.targetKey())) {
+                openSelectionEditor();
+            }
         }
         // Selecting and panning share the press: a drag only becomes one once the mouse moves, so
         // picking a marker never costs the ability to pan away from it.
         dragging = true;
         return true;
+    }
+
+    /** A double click: a marker opens its editor, a structure its note, when they can be edited. */
+    private void openSelectionEditor() {
+        ActiveWorld world = WorldProfileManager.get().currentWorld();
+        if (!ExplorationManager.get().isWritable() || selection == null) {
+            return;
+        }
+        if (selection.isMarker()) {
+            if (selectedMarker() != null) {
+                openEditor(editor().beginEditMarker(selection.markerId()));
+            }
+            return;
+        }
+        StructureKey key = selectedStructureKey(world);
+        StructureValidation result = selection.layer().resultAt(world, selection.chunkX(), selection.chunkZ());
+        if (key != null && result != null && !result.isRejected()) {
+            openEditor(editor().beginStructureNote(key, structureSubject()));
+        }
+    }
+
+    private String structureSubject() {
+        return selection.layer().displayName() + " at chunk " + selection.chunkX() + ", " + selection.chunkZ();
     }
 
     private boolean isOverPanel(double mouseX, double mouseY) {
@@ -1345,7 +1604,8 @@ public final class MapScreen extends Screen {
      *
      * <p>Structures are gathered from a few chunks around the cursor, because a marker has a minimum
      * on-screen size and may sit at a generation point off its chunk's centre; every test is seed
-     * arithmetic. Custom markers come from the markers on screen in this dimension.
+     * arithmetic. Custom markers come from the markers on screen in this dimension. Both go through
+     * the layers' own visibility rules, so what is hidden cannot be picked.
      */
     private void selectAt(double mouseX, double mouseY) {
         ActiveWorld world = WorldProfileManager.get().currentWorld();
@@ -1393,7 +1653,8 @@ public final class MapScreen extends Screen {
         selectionScroll = 0;
         selectionNotice = null;
         if (picked == null) {
-            clearSelection();
+            selection = null;
+            rightPanel = null;
         } else if (picked.target() instanceof CustomMarker) {
             selection = MapSelection.marker(((CustomMarker) picked.target()).id());
         } else {
@@ -1513,6 +1774,14 @@ public final class MapScreen extends Screen {
         StructureStatus[] statuses = StructureStatus.values();
         MarkerType[] types = MarkerType.values();
 
+        if (action >= ACTION_MARKER_LIST_BASE) {
+            selectListedMarker(action - ACTION_MARKER_LIST_BASE);
+            return;
+        }
+        if (action >= ACTION_STATUS_FILTER_BASE) {
+            runFilterAction(action, statuses, types);
+            return;
+        }
         if (action >= ACTION_STATUS_BASE && action < ACTION_STATUS_BASE + statuses.length) {
             StructureKey key = selectedStructureKey(world);
             StructureStatus status = statuses[action - ACTION_STATUS_BASE];
@@ -1530,14 +1799,11 @@ public final class MapScreen extends Screen {
             return;
         }
         switch (action) {
-            case ACTION_EDIT_NOTE: {
-                StructureKey key = selectedStructureKey(world);
-                if (key != null) {
-                    openEditor(editor.beginStructureNote(key, selection.layer().displayName() + " at chunk "
-                            + selection.chunkX() + ", " + selection.chunkZ()));
+            case ACTION_EDIT_NOTE:
+                if (selectedStructureKey(world) != null) {
+                    openEditor(editor.beginStructureNote(selectedStructureKey(world), structureSubject()));
                 }
                 return;
-            }
             case ACTION_ADD_MARKER_POINTER:
                 if (pointerSet) {
                     openEditor(editor.beginCreateMarker(world.context().dimensionId(), pointerX, null, pointerZ));
@@ -1618,10 +1884,54 @@ public final class MapScreen extends Screen {
         }
         List<MapLayer> layers = LAYERS.all();
         int layerIndex = action - ACTION_LAYER_BASE;
-        // Only rows that were listed can be clicked, and a row is listed only for its dimension.
-        if (layerIndex >= 0 && layerIndex < layers.size()) {
+        // Only rows that were listed can be clicked, and a row is listed only for its dimension; and no
+        // layer is switched under an open editor.
+        if (layerIndex >= 0 && layerIndex < layers.size() && !editor.isActive()) {
             MapLayer layer = layers.get(layerIndex);
             layer.setEnabled(!layer.isEnabled());
+            MapSettingsManager.get().layerChanged(layer.id(), layer.isEnabled());
+        }
+    }
+
+    /** A filter toggle or shortcut; saved at once. Never while an editor is open. */
+    private void runFilterAction(int action, StructureStatus[] statuses, MarkerType[] types) {
+        if (editor().isActive()) {
+            return;
+        }
+        ExplorationFilters filters = filters();
+        if (action >= ACTION_STATUS_FILTER_BASE && action < ACTION_STATUS_FILTER_BASE + statuses.length) {
+            filters.toggleStatus(statuses[action - ACTION_STATUS_FILTER_BASE]);
+        } else if (action >= ACTION_MARKER_FILTER_BASE && action < ACTION_MARKER_FILTER_BASE + types.length) {
+            filters.toggleMarkerType(types[action - ACTION_MARKER_FILTER_BASE]);
+        } else if (action == ACTION_FILTER_ALL_STRUCTURES) {
+            filters.showAllStatuses();
+        } else if (action == ACTION_FILTER_UNVISITED_ONLY) {
+            filters.showOnlyStatus(StructureStatus.UNVISITED);
+        } else if (action == ACTION_FILTER_HIDE_LOOTED) {
+            filters.setStatusVisible(StructureStatus.LOOTED, false);
+        } else if (action == ACTION_FILTER_ALL_MARKERS) {
+            filters.showAllMarkerTypes();
+        } else {
+            return;
+        }
+        MapSettingsManager.get().save();
+    }
+
+    /** A marker list row: select the marker and centre the map on it. */
+    private void selectListedMarker(int row) {
+        if (row < 0 || row >= listedMarkerIds.length) {
+            return;
+        }
+        CustomMarker marker = ExplorationManager.get().marker(listedMarkerIds[row]);
+        if (marker == null) {
+            return;
+        }
+        followPlayer = false;
+        viewport.setCenter(marker.x() + 0.5, marker.z() + 0.5);
+        if (!editor().isActive()) {
+            selection = MapSelection.marker(marker.id());
+            selectionScroll = 0;
+            selectionNotice = null;
         }
     }
 
@@ -1632,6 +1942,7 @@ public final class MapScreen extends Screen {
             editorNotice = null;
             editorScroll = 0;
             editorCursorState = "";
+            doubleClicks.reset();
         } else {
             String reason = ExplorationManager.get().readOnlyReason();
             selectionNotice = "cannot edit: " + (reason == null ? "no world profile" : reason);
@@ -1687,29 +1998,58 @@ public final class MapScreen extends Screen {
         return true;
     }
 
-    private boolean onKeyPressed(int keyCode, int modifiers) {
-        if (editor().isActive()) {
-            EditorKey key = editorKeyOf(keyCode);
-            if (key != null) {
-                editor().handleKey(key, (modifiers & GLFW.GLFW_MOD_CONTROL) != 0);
-                afterEditorInput();
+    /**
+     * @param paste whether the key is the platform's paste shortcut, as the Minecraft version reports it
+     * @return whether the screen consumed the key; {@code false} lets Minecraft act on it, which for
+     *         Escape closes the screen
+     */
+    private boolean onKeyPressed(int keyCode, int modifiers, boolean paste) {
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+            switch (MapShortcuts.escape(editor().isActive(), editingSeed, selection != null, pointerSet)) {
+                case CANCEL_EDITOR:
+                    editor().cancel();
+                    afterEditorInput();
+                    return true;
+                case CANCEL_SEED_EDIT:
+                    cancelSeedEdit();
+                    return true;
+                case CLEAR_SELECTION:
+                    clearSelection();
+                    pointerSet = false;
+                    return true;
+                default:
+                    return false;
             }
-            // Every key is the editor's while it is open, Escape included.
+        }
+        if (editor().isActive()) {
+            if (paste) {
+                editor().paste(ClipboardBridge.read());
+            } else {
+                EditorKey key = editorKeyOf(keyCode);
+                if (key != null) {
+                    editor().handleKey(key, (modifiers & GLFW.GLFW_MOD_CONTROL) != 0);
+                    afterEditorInput();
+                }
+            }
+            // Every key is the editor's while it is open.
             return true;
         }
-        if (!editingSeed) {
-            return false;
+        if (editingSeed) {
+            if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+                confirmSeedEdit();
+            } else if (keyCode == GLFW.GLFW_KEY_BACKSPACE && !seedInput.isEmpty()) {
+                seedInput = seedInput.substring(0, seedInput.length() - 1);
+                seedError = null;
+            }
+            return true;
         }
-        if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
-            confirmSeedEdit();
-        } else if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
-            // Swallowed so cancelling the field does not also close the whole screen.
-            cancelSeedEdit();
-        } else if (keyCode == GLFW.GLFW_KEY_BACKSPACE && !seedInput.isEmpty()) {
-            seedInput = seedInput.substring(0, seedInput.length() - 1);
-            seedError = null;
+        if (keyCode == GLFW.GLFW_KEY_DELETE) {
+            if (MapShortcuts.deleteOpensConfirmation(false, false, selection) && selectedMarker() != null) {
+                openEditor(editor().beginDeleteMarker(selection.markerId()));
+                return true;
+            }
         }
-        return true;
+        return false;
     }
 
     private static EditorKey editorKeyOf(int keyCode) {
@@ -1717,8 +2057,6 @@ public final class MapScreen extends Screen {
             case GLFW.GLFW_KEY_ENTER:
             case GLFW.GLFW_KEY_KP_ENTER:
                 return EditorKey.ENTER;
-            case GLFW.GLFW_KEY_ESCAPE:
-                return EditorKey.ESCAPE;
             case GLFW.GLFW_KEY_TAB:
                 return EditorKey.TAB;
             case GLFW.GLFW_KEY_BACKSPACE:
@@ -1851,7 +2189,7 @@ public final class MapScreen extends Screen {
 
     @Override
     public boolean keyPressed(KeyEvent event) {
-        return onKeyPressed(event.key(), event.modifiers()) || super.keyPressed(event);
+        return onKeyPressed(event.key(), event.modifiers(), event.isPaste()) || super.keyPressed(event);
     }
     //?} else {
     /*@Override
@@ -1881,7 +2219,7 @@ public final class MapScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        return onKeyPressed(keyCode, modifiers) || super.keyPressed(keyCode, scanCode, modifiers);
+        return onKeyPressed(keyCode, modifiers, isPaste(keyCode)) || super.keyPressed(keyCode, scanCode, modifiers);
     }
     *///?}
 }

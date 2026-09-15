@@ -69,6 +69,11 @@ public final class BiomeLayer implements MapLayer {
     private int sampleY = DEFAULT_SAMPLE_Y;
 
     @Override
+    public String id() {
+        return "biomes";
+    }
+
+    @Override
     public String displayName() {
         return "Biomes";
     }

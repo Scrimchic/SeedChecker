@@ -96,10 +96,7 @@ public final class PlayerNavigator {
 
     /** Puts text on the system clipboard. Does nothing if the client is not up yet. */
     public static void copyToClipboard(String text) {
-        Minecraft client = Minecraft.getInstance();
-        if (client.keyboardHandler != null) {
-            client.keyboardHandler.setClipboard(text);
-        }
+        ClipboardBridge.write(text);
     }
 
     // ----------------------------------------------------- version-specific client calls

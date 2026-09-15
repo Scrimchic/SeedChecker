@@ -18,6 +18,14 @@ class TextBufferTest {
         }
     }
 
+    private static String repeat(String text, int times) {
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < times; i++) {
+            out.append(text);
+        }
+        return out.toString();
+    }
+
     @Test
     void typingInsertsAtTheCursorAndKeysMoveIt() {
         TextBuffer buffer = new TextBuffer(100, true);
@@ -61,6 +69,7 @@ class TextBufferTest {
         TextBuffer buffer = new TextBuffer(100, true);
         type(buffer, "Скарб 🏰 ✓");
         assertEquals("Скарб 🏰 ✓", buffer.committedText());
+        assertEquals(9, buffer.codePointCount());
         buffer.left();
         buffer.left();
         buffer.backspace();
@@ -80,6 +89,7 @@ class TextBufferTest {
         assertTrue(buffer.insert(castle[0]));
         assertTrue(buffer.insert(castle[1]));
         assertEquals("🏰", buffer.committedText());
+        assertEquals(1, buffer.codePointCount());
 
         assertFalse(buffer.insert(castle[1]), "a low half without its high half");
         assertTrue(buffer.insert(castle[0]));
@@ -98,25 +108,63 @@ class TextBufferTest {
     }
 
     @Test
-    void theModelsLimitIsNeverExceeded() {
-        TextBuffer buffer = new TextBuffer(ExplorationText.NOTE_MAX_LENGTH, true);
-        StringBuilder almost = new StringBuilder();
-        while (almost.length() < ExplorationText.NOTE_MAX_LENGTH - 1) {
-            almost.append('a');
-        }
-        buffer.set(almost.toString());
-        assertFalse(buffer.insert(0x1F3F0), "a pair does not fit in one free char");
-        assertFalse(buffer.insert(Character.toChars(0x1F3F0)[0]), "neither does its high half");
-        assertTrue(buffer.insert('z'));
+    void theLimitIsTheModelsInCodePoints() {
+        TextBuffer buffer = new TextBuffer(ExplorationText.NOTE_MAX_CODE_POINTS, true);
+        buffer.set(repeat("a", ExplorationText.NOTE_MAX_CODE_POINTS - 1));
+        assertTrue(buffer.insert(0x1F3F0), "an emoji is one character, and one is left");
+        assertEquals(ExplorationText.NOTE_MAX_CODE_POINTS, buffer.codePointCount());
+        assertEquals(ExplorationText.NOTE_MAX_CODE_POINTS + 1, buffer.length(), "though it is two chars");
         assertFalse(buffer.insert('z'));
+        assertFalse(buffer.insert(Character.toChars(0x1F3F0)[0]));
         assertFalse(buffer.newline());
-        assertEquals(ExplorationText.NOTE_MAX_LENGTH, buffer.committedText().length());
         assertEquals(buffer.committedText(), ExplorationText.note(buffer.committedText()),
                 "what the buffer holds, the model keeps unchanged");
 
-        StringBuilder over = new StringBuilder(almost).append("🏰🏰");
-        buffer.set(over.toString());
-        assertTrue(buffer.length() <= ExplorationText.NOTE_MAX_LENGTH);
+        buffer.set(repeat("🏰", ExplorationText.NOTE_MAX_CODE_POINTS + 3));
+        assertEquals(ExplorationText.NOTE_MAX_CODE_POINTS, buffer.codePointCount());
         assertFalse(Character.isHighSurrogate(buffer.text().charAt(buffer.length() - 1)));
+    }
+
+    @Test
+    void aHighHalfWaitsForItsPartnerAtTheLimit() {
+        TextBuffer buffer = new TextBuffer(3, true);
+        buffer.set("ab");
+        char[] castle = Character.toChars(0x1F3F0);
+        assertTrue(buffer.insert(castle[0]), "the high half takes the last place");
+        assertTrue(buffer.insert(castle[1]), "and its low half joins it without another");
+        assertEquals("ab🏰", buffer.committedText());
+        assertFalse(buffer.insert('c'));
+    }
+
+    @Test
+    void pasteKeepsLinesInANoteAndFoldsThemInALabel() {
+        TextBuffer note = new TextBuffer(100, true);
+        type(note, "start end");
+        for (int i = 0; i < 3; i++) {
+            note.left();
+        }
+        note.left();
+        assertEquals(ExplorationText.codePointLength("\nперший рядок\n🏰 second\n"),
+                note.paste("\r\nперший\tрядок\r\n🏰 second\n"), "counted in code points, bell dropped");
+        assertEquals("start\nперший рядок\n🏰 second\n end", note.text());
+
+        TextBuffer label = new TextBuffer(100, false);
+        label.paste("Main\r\nbase\n🏰");
+        assertEquals("Main base 🏰", label.text());
+        assertEquals(0, label.paste(null));
+        assertEquals(0, label.paste(""));
+    }
+
+    @Test
+    void pasteStopsAtTheLimitWithoutSplittingAPair() {
+        TextBuffer buffer = new TextBuffer(5, true);
+        type(buffer, "ab");
+        assertEquals(3, buffer.paste("🏰🏰🏰🏰"));
+        assertEquals("ab🏰🏰🏰", buffer.committedText());
+        assertEquals(0, buffer.paste("more"));
+
+        TextBuffer stray = new TextBuffer(10, true);
+        stray.paste("a\uD83Cb\uDF30c");
+        assertEquals("abc", stray.text(), "a surrogate half on the clipboard is dropped");
     }
 }

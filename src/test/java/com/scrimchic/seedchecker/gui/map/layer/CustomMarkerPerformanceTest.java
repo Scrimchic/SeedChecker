@@ -12,6 +12,7 @@ import org.junit.jupiter.api.io.TempDir;
 import com.scrimchic.seedchecker.client.exploration.ExplorationManager;
 import com.scrimchic.seedchecker.core.map.MapViewport;
 import com.scrimchic.seedchecker.exploration.CustomMarker;
+import com.scrimchic.seedchecker.exploration.ExplorationFilters;
 import com.scrimchic.seedchecker.exploration.MarkerType;
 import com.scrimchic.seedchecker.gui.map.MapHitTest;
 import com.scrimchic.seedchecker.world.ActiveWorld;
@@ -36,7 +37,7 @@ class CustomMarkerPerformanceTest {
                         (int) ((i * 104_729L) % 20_000) - 10_000, types[i % types.length], "marker " + i, null);
                 exploration.createMarker("minecraft:the_nether", i, null, i, MarkerType.PORTAL, null, null);
             }
-            CustomMarkerLayer layer = new CustomMarkerLayer(exploration);
+            CustomMarkerLayer layer = new CustomMarkerLayer(new ExplorationFilters(), exploration);
             ActiveWorld world = CustomMarkerLayerTest.unknownSeedWorld(OVERWORLD);
 
             for (double scale : new double[] {MapViewport.MIN_SCALE, 1.0 / 4, 1.0}) {

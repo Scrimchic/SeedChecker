@@ -15,6 +15,12 @@ import com.scrimchic.seedchecker.world.ActiveWorld;
  */
 public interface MapLayer {
 
+    /**
+     * The stable id map preferences remember this layer by, e.g. {@code village} or
+     * {@code custom_markers}. Never change an existing one; {@code LayerIdTest} pins them.
+     */
+    String id();
+
     /** Name shown in the Seed Checker panel. */
     String displayName();
 

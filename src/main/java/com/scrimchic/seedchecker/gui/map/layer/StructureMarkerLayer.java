@@ -8,7 +8,7 @@ import com.scrimchic.seedchecker.worldgen.StructureValidation;
  * A layer whose markers are structures the map screen can select, navigate to and measure.
  *
  * <p>Grid structures and strongholds are placed by entirely different algorithms, but once a
- * structure is on the map the screen needs the same four answers from either.
+ * structure is on the map the screen needs the same answers from either.
  */
 public interface StructureMarkerLayer extends MapLayer {
 
@@ -16,6 +16,13 @@ public interface StructureMarkerLayer extends MapLayer {
 
     /** Whether this layer draws a marker for a structure starting in that chunk right now. */
     boolean isMarkerAt(ActiveWorld world, int chunkX, int chunkZ);
+
+    /**
+     * Whether the structure starting in that chunk passes everything the player controls: the layer
+     * is on, belongs to the dimension, and the exploration filters let its status through. Part of
+     * {@link #isMarkerAt}, and on its own what decides whether a selection stays.
+     */
+    boolean isShown(ActiveWorld world, int chunkX, int chunkZ);
 
     /** @return what is known about the structure in that chunk, or {@code null} while unknown. */
     StructureValidation resultAt(ActiveWorld world, int chunkX, int chunkZ);
@@ -25,4 +32,10 @@ public interface StructureMarkerLayer extends MapLayer {
 
     /** An extra line for the selection panel, such as a stronghold's number, or {@code null}. */
     String describeSelection(ActiveWorld world, int chunkX, int chunkZ);
+
+    /**
+     * Adds how many structures of each exploration status the last {@link #render} drew, indexed by
+     * status ordinal. Only meaningful for a layer that rendered this frame.
+     */
+    void addDrawnStatusCounts(int[] counts);
 }
