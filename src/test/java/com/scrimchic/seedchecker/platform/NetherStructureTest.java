@@ -221,7 +221,7 @@ class NetherStructureTest {
         assertEquals(NETHER, nether.dimensionId());
         assertTrue(nether.isBiomeColumnConstant());
         assertFalse(overworld.isBiomeColumnConstant());
-        assertEquals(null, BiomeWorldgenSession.create(SEED, "minecraft:the_end"));
+        assertEquals(null, BiomeWorldgenSession.create(SEED, "seedchecker:custom"));
 
         Set<String> expected = new HashSet<String>(Arrays.asList("minecraft:nether_wastes",
                 "minecraft:soul_sand_valley", "minecraft:crimson_forest", "minecraft:warped_forest",

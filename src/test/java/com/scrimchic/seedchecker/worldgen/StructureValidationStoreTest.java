@@ -89,6 +89,35 @@ class StructureValidationStoreTest {
     }
 
     @Test
+    void theEndIsAMapOfItsOwn() {
+        // The same chunk under the End's key and the overworld's is two decisions, and moving to the
+        // End drops what the overworld had decided.
+        StructureValidationStore store = new StructureValidationStore(16, 8);
+        BiomeMapKey overworld = new BiomeMapKey("world-a", SEED, "minecraft:overworld", "26.2", 0);
+        BiomeMapKey end = new BiomeMapKey("world-a", SEED, "minecraft:the_end", "26.2", 0);
+        StructureValidationKey overworldKey =
+                new StructureValidationKey(overworld, StructureType.END_CITY, -3, 40);
+        StructureValidationKey endCity =
+                new StructureValidationKey(end, StructureType.END_CITY, -3, 40);
+        assertNotEquals(overworldKey, endCity);
+
+        store.useMap(overworld);
+        store.store(overworldKey, StructureValidation.incompatible("minecraft:plains"),
+                store.claim(overworldKey), 1L);
+        store.release(overworldKey);
+        assertNull(store.resultIfReady(endCity), "an overworld answer leaked into the End");
+
+        assertTrue(store.useMap(end));
+        assertNull(store.resultIfReady(overworldKey));
+        int generation = store.claim(endCity);
+        assertNotEquals(StructureValidationStore.NO_JOB, generation);
+        assertTrue(store.store(endCity, StructureValidation.exactlyCompatible("end_city",
+                "minecraft:end_highlands"), generation, 1L));
+        store.release(endCity);
+        assertNotNull(store.resultIfReady(endCity));
+    }
+
+    @Test
     void aDecisionThatArrivesAfterTheWorldChangedIsDropped() {
         StructureValidationStore store = new StructureValidationStore(16, 8);
         BiomeMapKey before = mapWithSeed(SEED);

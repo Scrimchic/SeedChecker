@@ -1554,6 +1554,8 @@ class StructureBiomeValidatorTest {
                 return "nether_complexes";
             case NETHER_FOSSIL:
                 return "nether_fossils";
+            case END_CITY:
+                return "end_cities";
             default:
                 throw new AssertionError(type);
         }
@@ -1722,6 +1724,8 @@ class StructureBiomeValidatorTest {
                 return StructureFeature.BASTION_REMNANT;
             case NETHER_FOSSIL:
                 return StructureFeature.NETHER_FOSSIL;
+            case END_CITY:
+                return StructureFeature.END_CITY;
             default:
                 return null;
         }
@@ -1843,7 +1847,11 @@ class StructureBiomeValidatorTest {
             // validator reproduces and NetherStructureTest holds to vanilla's generate.
             boolean netherComplex = type == StructureType.NETHER_FORTRESS
                     || type == StructureType.BASTION_REMNANT;
-            if (placements.get(type).hasRestrictions() || hasAreaTest(type) || netherComplex) {
+            // The end city's is its y 60 terrain condition, which the validator asks of vanilla's own
+            // start and EndStructureTest holds to vanilla's generate.
+            boolean terrainPredicate = type == StructureType.END_CITY;
+            if (placements.get(type).hasRestrictions() || hasAreaTest(type) || netherComplex
+                    || terrainPredicate) {
                 assertNotEquals(StructureFeature.class, declaring,
                         type + " is modelled with a predicate vanilla no longer has");
             } else {

@@ -330,6 +330,8 @@ class VanillaStructurePlacementTest {
                 return BuiltinStructureSets.NETHER_COMPLEXES;
             case NETHER_FOSSIL:
                 return BuiltinStructureSets.NETHER_FOSSILS;
+            case END_CITY:
+                return BuiltinStructureSets.END_CITIES;
             default:
                 return null;
         }
@@ -486,6 +488,8 @@ class VanillaStructurePlacementTest {
                 return StructureFeature.BASTION_REMNANT;
             case NETHER_FOSSIL:
                 return StructureFeature.NETHER_FOSSIL;
+            case END_CITY:
+                return StructureFeature.END_CITY;
             default:
                 return null;
         }

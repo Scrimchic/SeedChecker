@@ -87,6 +87,13 @@ class RowWindowTest {
                 "the last row must be reachable");
     }
 
+    @Test
+    void theEndPanelListsOnlyItsOwnLayers() {
+        int layers = layerRows("minecraft:the_end");
+        assertEquals(2, layers, "biomes and the end city");
+        assertTrue(layers < layerRows("minecraft:the_nether"));
+    }
+
     /** The layer toggles the context panel lists in a dimension, as MapScreen filters them. */
     private static int layerRows(String dimensionId) {
         int count = 0;

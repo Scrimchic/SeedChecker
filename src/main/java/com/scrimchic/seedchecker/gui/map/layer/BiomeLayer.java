@@ -46,6 +46,15 @@ public final class BiomeLayer implements MapLayer {
      */
     public static final int NETHER_SAMPLE_Y = 32;
 
+    /**
+     * The End's slice height, and semantic only: the End's biome does not depend on height on any
+     * target. 1.16.5's {@code TheEndBiomeSource.getNoiseBiome} never reads its y argument, and the
+     * modern one reads only the router's erosion, which the End's noise settings define as
+     * {@code cache_2d} over {@code end_islands}. {@code EndStructureTest} checks it sample by sample.
+     * 0 is the End's own sea level and the floor of its level, named rather than borrowed.
+     */
+    public static final int END_SAMPLE_Y = 0;
+
     /** Per-frame submission budget, so a large jump in zoom does not enqueue the whole screen. */
     private static final int MAX_REQUESTS_PER_FRAME = 32;
 
@@ -85,7 +94,10 @@ public final class BiomeLayer implements MapLayer {
 
     /** The height the slice is taken at in that dimension. */
     public int sampleYFor(String dimensionId) {
-        return BiomeWorldgenSession.NETHER.equals(dimensionId) ? NETHER_SAMPLE_Y : sampleY;
+        if (BiomeWorldgenSession.NETHER.equals(dimensionId)) {
+            return NETHER_SAMPLE_Y;
+        }
+        return BiomeWorldgenSession.END.equals(dimensionId) ? END_SAMPLE_Y : sampleY;
     }
 
     @Override
@@ -98,7 +110,7 @@ public final class BiomeLayer implements MapLayer {
             return "not in a world";
         }
         if (!BiomeWorldgenSession.supportsDimension(dimensionId)) {
-            return "overworld and nether only";
+            return "vanilla dimensions only";
         }
         if (stepFor(viewport) > BiomeWorldgenSession.coarsestBlockStep()) {
             // Measured per version: how coarsely it can sample, and how many rectangles the map

@@ -137,6 +137,25 @@ import net.minecraft.world.level.levelgen.structure.StructureStart;*/
  * nether evaluates one generation point per candidate, not seven, and the overworld evaluates none
  * for the nether entry.
  *
+ * <h2>The End (Phase 3H-3)</h2>
+ *
+ * <p>One structure on every target: vanilla's registries let nothing but the end city start in an
+ * End biome, which {@code EndStructureTest} derives from vanilla rather than assumes.
+ *
+ * <p>From 1.18 {@code EndCityStructure.findGenerationPoint} draws a rotation, takes the lowest of
+ * four {@code WORLD_SURFACE_WG} heights of a 5 by 5 box at the chunk minimum plus 7 - which corners,
+ * the rotation decides - refuses below y 60, and puts the stub on that lowest height at the chunk
+ * minimum plus 7. Vanilla's own, through the loaded data pack, like the fossil: the class reads no
+ * biome tag, and the End's terrain comes from a plain generator over the End's noise settings, so
+ * no chunk and no generated feature enters it. Because the End's biome depends neither on height
+ * nor on the column inside a chunk, a chunk whose biome refuses is refused before the four terrain
+ * columns are walked, as for the fossil.
+ *
+ * <p>1.16.5 checks the same thing in another order and with another random: the biome at the
+ * chunk's fixed quart must list the end city, and {@code EndCityFeature.isFeatureChunk} then draws
+ * its rotation from {@code new Random(chunkX + chunkZ * 10387313)} and refuses below y 60.
+ * {@code featureChunkRefusal} asks vanilla's own start.
+ *
  * <h2>Placement comes first</h2>
  *
  * <p>Frequency reductions and exclusion zones are placement, not validation:
@@ -498,13 +517,18 @@ public final class StructureBiomeValidator {
      */
     private static final Set<String> VANILLA_GENERATION_POINT = new HashSet<String>(
             java.util.Arrays.asList("minecraft:mineshaft", "minecraft:woodland_mansion",
-                    "minecraft:ruined_portal", "minecraft:fortress", "minecraft:nether_fossil"));
+                    "minecraft:ruined_portal", "minecraft:fortress", "minecraft:nether_fossil",
+                    "minecraft:end_city"));
 
     /**
-     * {@code NetherFossilStructure}: x and z are the chunk minimum plus {@code nextInt(16)}, so the
-     * stub column is always one of the chunk's own. Its height and terrain walk are vanilla's.
+     * Structure types whose stub column is always one of the candidate chunk's own.
+     *
+     * <p>{@code NetherFossilStructure}: x and z are the chunk minimum plus {@code nextInt(16)}.
+     * {@code EndCityStructure}: {@code getLowestYIn5by5BoxOffset7Blocks} puts the stub at the chunk
+     * minimum plus 7 on both axes, whatever the rotation. Height and terrain are vanilla's for both.
      */
-    private static final String NETHER_FOSSIL = "minecraft:nether_fossil";
+    private static final Set<String> STUB_INSIDE_CHUNK = new HashSet<String>(
+            java.util.Arrays.asList("minecraft:nether_fossil", "minecraft:end_city"));
 
     private static final String NOT_IN_DIMENSION = "none of its biomes exist in this dimension";
 
@@ -578,6 +602,8 @@ public final class StructureBiomeValidator {
                 return "nether_complexes";
             case NETHER_FOSSIL:
                 return "nether_fossils";
+            case END_CITY:
+                return "end_cities";
             default:
                 return null;
         }
@@ -1025,7 +1051,7 @@ public final class StructureBiomeValidator {
                                             MONUMENT_SURROUNDING_TAG, tagCache, new HashSet<String>()))
                                     : null,
                             owner == null || owner.equals(structureId),
-                            NETHER_FOSSIL.equals(structureTypeId)));
+                            STUB_INSIDE_CHUNK.contains(structureTypeId)));
                 }
             }
             if (!entries.isEmpty()) {
@@ -1180,6 +1206,8 @@ public final class StructureBiomeValidator {
                 return StructureFeature.BASTION_REMNANT;
             case NETHER_FOSSIL:
                 return StructureFeature.NETHER_FOSSIL;
+            case END_CITY:
+                return StructureFeature.END_CITY;
             default:
                 return null;
         }
@@ -1260,8 +1288,19 @@ public final class StructureBiomeValidator {
                     StructureFeature.NETHER_FOSSIL, chunkX, chunkZ);
             return start != null && start.isValid() ? null : FOSSIL_TERRAIN_REFUSED;
         }
+        if (type == StructureType.END_CITY) {
+            // EndCityFeature.isFeatureChunk: the lowest of four terrain corners, placed by a rotation
+            // from its own chunk-seeded Random, must reach y 60; EndCityStart.generatePieces asks the
+            // same again and adds no piece otherwise. Vanilla's own start decides.
+            StructureStart<?> start = StructureGeometryGenerator.legacyStart(session,
+                    StructureFeature.END_CITY, chunkX, chunkZ);
+            return start != null && start.isValid() ? null : END_CITY_TERRAIN_REFUSED;
+        }
         return null;
     }
+
+    private static final String END_CITY_TERRAIN_REFUSED =
+            "vanilla builds no start: the lowest corner is below y 60";
 
     private static final String DREW_BASTION = "vanilla drew a bastion remnant for this chunk";
     private static final String DREW_FORTRESS = "vanilla drew a fortress for this chunk";

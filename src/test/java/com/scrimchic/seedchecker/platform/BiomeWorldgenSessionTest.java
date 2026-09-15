@@ -159,13 +159,15 @@ class BiomeWorldgenSessionTest {
     }
 
     @Test
-    void theOverworldAndTheNetherAreSupported() {
+    void everyVanillaDimensionIsSupportedAndNothingElse() {
         assertTrue(BiomeWorldgenSession.supportsDimension(BiomeWorldgenSession.OVERWORLD));
         assertTrue(BiomeWorldgenSession.supportsDimension("minecraft:the_nether"));
-        assertFalse(BiomeWorldgenSession.supportsDimension("minecraft:the_end"));
+        assertTrue(BiomeWorldgenSession.supportsDimension("minecraft:the_end"));
+        assertFalse(BiomeWorldgenSession.supportsDimension("seedchecker:custom"));
         assertFalse(BiomeWorldgenSession.supportsDimension(null));
 
-        assertNull(BiomeWorldgenSession.create(SEED, "minecraft:the_end"));
+        assertNull(BiomeWorldgenSession.create(SEED, "seedchecker:custom"));
+        assertNotNull(BiomeWorldgenSession.create(SEED, "minecraft:the_end"));
         assertEquals(BiomeWorldgenSession.OVERWORLD, session.dimensionId());
     }
 
@@ -187,6 +189,9 @@ class BiomeWorldgenSessionTest {
         net.minecraft.world.level.LevelHeightAccessor nether =
                 BiomeWorldgenSession.heightAccessorOf(registries, BiomeWorldgenSession.NETHER);
         assertEquals("0,256", minY(nether) + "," + nether.getHeight());
+        net.minecraft.world.level.LevelHeightAccessor end =
+                BiomeWorldgenSession.heightAccessorOf(registries, BiomeWorldgenSession.END);
+        assertEquals("0,256", minY(end) + "," + end.getHeight());
     }
 
     private static int minY(net.minecraft.world.level.LevelHeightAccessor accessor) {

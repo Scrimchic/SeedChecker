@@ -142,6 +142,8 @@ public final class StructureLayer implements StructureMarkerLayer {
                 return 0xFF3B3842;
             case NETHER_FOSSIL:
                 return 0xFFE6DCC8;
+            case END_CITY:
+                return 0xFFC39BD3;
             default:
                 return 0xFFCCCCCC;
         }

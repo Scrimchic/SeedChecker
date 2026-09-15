@@ -11,7 +11,8 @@ import com.scrimchic.seedchecker.world.DimensionType;
  *
  * <p>Which of these actually exist in the running version is answered by
  * {@link StructurePlacements}, not by this enum. Which dimension each one can start in is answered
- * here, and held to every version's biome data by {@code NetherStructureTest}.
+ * here, and held to every version's biome data by {@code NetherStructureTest} and
+ * {@code EndStructureTest}.
  */
 public enum StructureType {
 
@@ -45,6 +46,9 @@ public enum StructureType {
     BASTION_REMNANT("Bastion Remnant", Dimensions.NETHER),
     NETHER_FOSSIL("Nether Fossil", Dimensions.NETHER),
 
+    /** Phase 3H-3: the only structure the End's biome source lets start, on every target. */
+    END_CITY("End City", Dimensions.END),
+
     /** Not grid placed; never in {@link StructurePlacements}. */
     STRONGHOLD("Stronghold", Dimensions.OVERWORLD);
 
@@ -67,21 +71,32 @@ public enum StructureType {
      */
     public boolean generatesIn(String dimensionId) {
         DimensionType dimension = DimensionType.fromId(dimensionId);
-        return dimension == DimensionType.OVERWORLD ? dimensions.overworld
-                : dimension == DimensionType.NETHER && dimensions.nether;
+        switch (dimension) {
+            case OVERWORLD:
+                return dimensions.overworld;
+            case NETHER:
+                return dimensions.nether;
+            case THE_END:
+                return dimensions.end;
+            default:
+                return false;
+        }
     }
 
     private enum Dimensions {
-        OVERWORLD(true, false),
-        NETHER(false, true),
-        OVERWORLD_AND_NETHER(true, true);
+        OVERWORLD(true, false, false),
+        NETHER(false, true, false),
+        OVERWORLD_AND_NETHER(true, true, false),
+        END(false, false, true);
 
         private final boolean overworld;
         private final boolean nether;
+        private final boolean end;
 
-        Dimensions(boolean overworld, boolean nether) {
+        Dimensions(boolean overworld, boolean nether, boolean end) {
             this.overworld = overworld;
             this.nether = nether;
+            this.end = end;
         }
     }
 }

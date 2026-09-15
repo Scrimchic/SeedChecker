@@ -87,6 +87,14 @@ import net.minecraft.world.level.storage.LevelStorageSource;*/
  * and the portal's only widen the chunk box they write into (26.2's fossil also places a dried
  * ghast, and the portal spreads netherrack), which adds blocks, not pieces.
  *
+ * <h2>The End</h2>
+ *
+ * <p>The end city's pieces are all placed by {@code EndCityPieces.startHouseTower} from the stub (or,
+ * on 1.16.5, the start) at the height of its lowest terrain corner - every tower, bridge and the ship
+ * if one was drawn - so the extent measured is the whole city. Its {@code postProcess} places each
+ * template where the piece already is; no piece moves, and the structure has no terrain adaptation to
+ * inflate its box.
+ *
  * <h2>Where there is no exact geometry</h2>
  *
  * <p>The desert pyramid, the jungle temple, the swamp hut and the igloo on every version, and the
@@ -265,6 +273,9 @@ public final class StructureGeometryGenerator {
                 return StructureFeature.BASTION_REMNANT;
             case NETHER_FOSSIL:
                 return StructureFeature.NETHER_FOSSIL;
+            // EndCityStart puts the whole city on the lowest terrain corner before returning.
+            case END_CITY:
+                return StructureFeature.END_CITY;
             default:
                 return null;
         }

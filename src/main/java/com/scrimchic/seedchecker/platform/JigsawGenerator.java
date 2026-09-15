@@ -21,7 +21,6 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeSource;
-import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.levelgen.LegacyRandomSource;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
@@ -79,9 +78,7 @@ final class JigsawGenerator {
                 .getOrThrow(BiomeWorldgenSession.noiseSettingsOf(dimensionId));
         this.randomState = RandomState.create(settings.value(),
                 registries.lookupOrThrow(Registries.NOISE), seed);
-        this.biomeSource = MultiNoiseBiomeSource.createFromPreset(
-                registries.lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST)
-                        .getOrThrow(BiomeWorldgenSession.biomeParametersOf(dimensionId)));
+        this.biomeSource = BiomeWorldgenSession.biomeSourceOf(registries, dimensionId);
         this.chunkGenerator = new NoiseBasedChunkGenerator(biomeSource, settings);
         this.heightAccessor = BiomeWorldgenSession.heightAccessorOf(registries, dimensionId);
     }

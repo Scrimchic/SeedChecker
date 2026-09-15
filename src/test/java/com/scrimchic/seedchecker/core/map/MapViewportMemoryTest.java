@@ -73,6 +73,42 @@ class MapViewportMemoryTest {
     }
 
     @Test
+    void theEndKeepsItsOwnViewAcrossAllThreeDimensions() {
+        // Overworld, then the nether, then the End, then back through both: each restores its own
+        // centre, zoom and follow state, whatever was remembered in between.
+        MapViewportMemory memory = new MapViewportMemory();
+        memory.remember("world-a|minecraft:overworld", viewportAt(8000.0, -400.0, 1.0), false);
+        memory.remember("world-a|minecraft:the_nether", viewportAt(1000.0, -50.0, 0.25), true);
+        memory.remember("world-a|minecraft:the_end", viewportAt(-1200.0, 900.0, 0.5), false);
+
+        MapViewport end = viewportAt(0.0, 0.0, 4.0);
+        assertTrue(memory.restore("world-a|minecraft:the_end", end));
+        assertEquals(-1200.0, end.getCenterBlockX(), 0.0001);
+        assertEquals(900.0, end.getCenterBlockZ(), 0.0001);
+        assertEquals(0.5, end.getScale(), 0.0001);
+        assertFalse(memory.followPlayer());
+
+        MapViewport nether = viewportAt(0.0, 0.0, 4.0);
+        assertTrue(memory.restore("world-a|minecraft:the_nether", nether));
+        assertEquals(1000.0, nether.getCenterBlockX(), 0.0001);
+        assertEquals(0.25, nether.getScale(), 0.0001);
+        assertTrue(memory.followPlayer());
+
+        MapViewport overworld = viewportAt(0.0, 0.0, 4.0);
+        assertTrue(memory.restore("world-a|minecraft:overworld", overworld));
+        assertEquals(8000.0, overworld.getCenterBlockX(), 0.0001);
+        assertEquals(-400.0, overworld.getCenterBlockZ(), 0.0001);
+        assertEquals(1.0, overworld.getScale(), 0.0001);
+        assertFalse(memory.followPlayer());
+
+        MapViewport endAgain = viewportAt(0.0, 0.0, 4.0);
+        assertTrue(memory.restore("world-a|minecraft:the_end", endAgain));
+        assertEquals(-1200.0, endAgain.getCenterBlockX(), 0.0001);
+        assertEquals(0.5, endAgain.getScale(), 0.0001);
+        assertFalse(memory.remembers("world-b|minecraft:the_end"));
+    }
+
+    @Test
     void followModeSurvivesReopening() {
         MapViewportMemory memory = new MapViewportMemory();
         assertFalse(memory.followPlayer());

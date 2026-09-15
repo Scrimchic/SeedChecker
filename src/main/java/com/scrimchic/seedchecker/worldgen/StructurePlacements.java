@@ -139,6 +139,18 @@ public final class StructurePlacements {
         put(placements, StructureType.NETHER_FORTRESS, 27, 4, 30084232);
         put(placements, StructureType.BASTION_REMNANT, 27, 4, 30084232);
         put(placements, StructureType.NETHER_FOSSIL, 2, 1, 14357921);
+        putEnd(placements);
+    }
+
+    /**
+     * Phase 3H-3, the same numbers on all three targets: the modern {@code end_cities} set and
+     * 1.16.5's {@code StructureSettings.DEFAULTS} entry for {@code END_CITY}, whose feature marks it
+     * triangular by overriding {@code linearSeparation} to false. The End's generator settings on
+     * 1.16.5 are {@code new StructureSettings(false)} - a copy of the defaults without a stronghold -
+     * so the End has no grid of its own; {@code EndStructureTest} checks that.
+     */
+    private static void putEnd(Map<StructureType, StructurePlacementConfig> placements) {
+        put(placements, StructureType.END_CITY, 20, 11, 10387313, SpreadType.TRIANGULAR);
     }
 
     /** A set with nothing but its grid, in the codec's default spread. */

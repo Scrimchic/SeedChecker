@@ -31,7 +31,8 @@ class MarkerDensityTest {
 
     private static final double[] SCALES = {1.0 / 64, 1.0 / 16, 1.0 / 4, 0.5, 1.0, 4.0};
 
-    private static final String[] DIMENSIONS = {"minecraft:overworld", "minecraft:the_nether"};
+    private static final String[] DIMENSIONS = {"minecraft:overworld", "minecraft:the_nether",
+            "minecraft:the_end"};
 
     @Test
     void markerCountsOverlapAndScanCostAreReported() {

@@ -55,10 +55,20 @@ class LayerDimensionTest {
         assertFalse(nether.contains("Slime Chunks"));
         assertFalse(nether.contains("Stronghold"));
 
-        // Neither a dimension this phase does not cover nor no world at all gets a structure layer.
-        List<String> end = new ArrayList<String>();
-        end.add("Biomes");
-        assertEquals(end, namesIn(layers, "minecraft:the_end"));
-        assertEquals(end, namesIn(layers, null));
+        // The End: biomes and its one structure. No slime chunks, stronghold, overworld or nether
+        // structure, and no ruined portal - no portal entry accepts an End biome.
+        List<String> end = namesIn(layers, "minecraft:the_end");
+        List<String> expectedEnd = new ArrayList<String>();
+        expectedEnd.add("Biomes");
+        expectedEnd.add("End City");
+        assertEquals(expectedEnd, end);
+        assertFalse(overworld.contains("End City"));
+        assertFalse(nether.contains("End City"));
+
+        // Neither a dimension Seed Checker does not know nor no world at all gets a structure layer.
+        List<String> biomesOnly = new ArrayList<String>();
+        biomesOnly.add("Biomes");
+        assertEquals(biomesOnly, namesIn(layers, "seedchecker:custom"));
+        assertEquals(biomesOnly, namesIn(layers, null));
     }
 }
